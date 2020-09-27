@@ -304,8 +304,6 @@ class IPKernelApp(BaseIPythonApplication, InteractiveShellApp,
         """start the heart beating"""
         # heartbeat doesn't share context, because it mustn't be blocked
         # by the GIL, which is accessed by libzmq when freeing zero-copy messages
-        # iOS: stored globally so it can be closed on shutdown:
-        global hb_ctx
         hb_ctx = zmq.Context()
         self.heartbeat = Heartbeat(hb_ctx, (self.transport, self.ip, self.hb_port))
         self.hb_port = self.heartbeat.port
@@ -436,10 +434,7 @@ class IPKernelApp(BaseIPythonApplication, InteractiveShellApp,
 
     def init_kernel(self):
         """Create the Kernel object itself"""
-        # iOS: made as global variables, so we can close them.
-        global shell_stream
         shell_stream = ZMQStream(self.shell_socket)
-        global control_stream
         control_stream = ZMQStream(self.control_socket)
 
         kernel_factory = self.kernel_class.instance
@@ -509,42 +504,6 @@ class IPKernelApp(BaseIPythonApplication, InteractiveShellApp,
         formatter = logging.Formatter(logging.BASIC_FORMAT)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
-
-    # iOS: cleanup functions: close_io, close_heartbeat, close_sockets, cleanup
-    def close_io(self):
-        if sys.stdout is not None:
-            sys.stdout.flush()
-            sys.stdout.close()
-        sys.stdout = sys.__stdout__
-
-        if sys.stderr is not None:
-            sys.stderr.flush()
-            sys.stderr.close()
-        sys.stderr = sys.__stderr__
-
-    def close_heartbeat(self):
-        """terminates the heartbeat socket"""
-        self.heartbeat.close()
-
-    def close_sockets(self):
-        self.shell_socket.close()
-        self.stdin_socket.close()
-        self.control_socket.close()
-        self.iopub_socket.close()
-    
-    def cleanup(self):
-        # iOS: cleanup function to close files, connections and sockets.
-        # no need to explicitly close kernel and poller (someone else does)
-        control_stream.flush()
-        shell_stream.flush()
-        control_stream.close()
-        shell_stream.close()
-        self.io_loop.close(all_fds=True)
-        self.close_io()
-        self.close_heartbeat()
-        self.close_sockets()
-        # self.cleanup_connection_file() # will be closed by jupyter_client
-        hb_ctx.term()  # close heartbeat context
 
     def _init_asyncio_patch(self):
         """set default asyncio policy to be compatible with tornado
@@ -646,15 +605,12 @@ class IPKernelApp(BaseIPythonApplication, InteractiveShellApp,
                 tr.run()
             except KeyboardInterrupt:
                 pass
-            # iOS: cleanup the sockets and connections
-            self.cleanup()
         else:
             try:
                 self.io_loop.start()
             except KeyboardInterrupt:
                 pass
-            # iOS: cleanup the sockets and connections
-            self.cleanup()
+
 
 launch_new_instance = IPKernelApp.launch_instance
 
