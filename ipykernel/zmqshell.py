@@ -19,6 +19,8 @@ import sys
 import time
 import warnings
 from threading import local
+# iOS addition:
+import subprocess
 
 from tornado import ioloop
 
@@ -637,8 +639,47 @@ class ZMQInteractiveShell(InteractiveShell):
         else:
             self.user_ns['_exit_code'] = system(self.var_expand(cmd, depth=1))
 
+    # iOS: use system_ios instead of system_piped
+    def system_ios(self, cmd): 
+        cmd = self.var_expand(cmd, depth=1)
+        p = subprocess.Popen(cmd, shell=True, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+        os.set_blocking(p.stdout.fileno(), False)
+        os.set_blocking(p.stderr.fileno(), False)
+        while True:
+            if (not p.stdout.closed):
+                outline = p.stdout.readline()
+            if (not p.stderr.closed):
+                errline = p.stderr.readline()
+            if (outline and outline != b""): 
+                print(outline.decode("UTF-8"),  end="\r", flush=True)
+            if (errline and errline != b""): 
+                print(errline.decode("UTF-8"),  end="\r", file = sys.stderr, flush=True)
+            outStreamClosed = p.stdout.closed or outline == b""
+            errStreamClosed = p.stderr.closed or errline == b""
+            # Additional test: check that the process is not still running:
+            processTerminated = False
+            try:
+                pid, sts = os.waitpid(p.pid, os.WNOHANG)
+                if pid != 0:
+                    processTerminated = True
+            except OSError as e:
+                processTerminated = True
+            if (errStreamClosed and outStreamClosed and processTerminated):
+                break
+        retcode = p.poll()
+
+        if retcode is not None: 
+            if retcode > 128:
+                retcode = -(retcode - 128)
+            self.user_ns["_exit_code"] = retcode 
+        else:
+            self.user_ns["_exit_code"] = 0
+    
     # Ensure new system_piped implementation is used
-    system = system_piped
+    if (sys.platform == "darwin" and os.uname().machine.startswith("iP")):
+        system = system_ios
+    else:
+        system = system_piped
 
 
 InteractiveShellABC.register(ZMQInteractiveShell)

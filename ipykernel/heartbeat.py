@@ -118,8 +118,3 @@ class Heartbeat(Thread):
                     raise
             else:
                 break
-
-    # iOS: terminate the zmq.proxy process
-    # but not the device itself, because it creates issues.
-    def close(self):
-        self.socket.close()
