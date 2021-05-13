@@ -103,11 +103,10 @@ class IPythonKernel(KernelBase):
             'text': "NumPy Reference",
             'url': "https://docs.scipy.org/doc/numpy/reference/",
         },
-# iOS: remove SciPy Reference since it is not available.
-#         {
-#             'text': "SciPy Reference",
-#             'url': "https://docs.scipy.org/doc/scipy/reference/",
-#         },
+        {
+            'text': "SciPy Reference",
+            'url': "https://docs.scipy.org/doc/scipy/reference/",
+        },
         {
             'text': "Matplotlib Reference",
             'url': "https://matplotlib.org/contents.html",
