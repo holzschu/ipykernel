@@ -12,9 +12,8 @@
 # All configuration values have a default; values that are commented out
 # serve to show the default.
 
-import sys
 import os
-import shlex
+import shutil
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -30,6 +29,7 @@ import shlex
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'myst_parser',
     'sphinx.ext.autodoc',
     'sphinx.ext.intersphinx',
     'sphinxcontrib_github_alt',
@@ -150,7 +150,7 @@ todo_include_todos = False
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+html_static_path = []
 
 # Add any extra paths that contain custom files (such as robots.txt or
 # .htaccess) here, relative to this directory. These files are copied
@@ -303,3 +303,8 @@ intersphinx_mapping = {
     'ipython': ('https://ipython.readthedocs.io/en/latest', None),
     'jupyter': ('https://jupyter.readthedocs.io/en/latest', None),
 }
+
+
+def setup(app):
+    here = os.path.dirname(os.path.abspath(__file__))
+    shutil.copy(os.path.join(here, '..', 'CHANGELOG.md'), 'changelog.md')

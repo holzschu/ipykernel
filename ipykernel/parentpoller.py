@@ -3,7 +3,7 @@
 
 try:
     import ctypes
-except:
+except ImportError:
     ctypes = None
 import os
 import platform
@@ -55,7 +55,6 @@ class ParentPollerWindows(Thread):
         interrupt_handle : HANDLE (int), optional
             If provided, the program will generate a Ctrl+C event when this
             handle is signaled.
-
         parent_handle : HANDLE (int), optional
             If provided, the program will terminate immediately when this
             handle is signaled.

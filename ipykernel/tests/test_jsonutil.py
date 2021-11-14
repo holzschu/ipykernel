@@ -9,16 +9,22 @@ import json
 from datetime import datetime
 import numbers
 
-import nose.tools as nt
+import pytest
+
+from jupyter_client._version import version_info as jupyter_client_version
 
 from .. import jsonutil
 from ..jsonutil import json_clean, encode_images
-from ipython_genutils.py3compat import unicode_to_str
+
+
+JUPYTER_CLIENT_MAJOR_VERSION = jupyter_client_version[0]
+
 
 class MyInt(object):
     def __int__(self):
         return 389
 numbers.Integral.register(MyInt)
+
 
 class MyFloat(object):
     def __float__(self):
@@ -26,6 +32,7 @@ class MyFloat(object):
 numbers.Real.register(MyFloat)
 
 
+@pytest.mark.skipif(JUPYTER_CLIENT_MAJOR_VERSION >= 7, reason="json_clean is a no-op")
 def test():
     # list of input/expected output.  Use None for the expected output if it
     # can be the same as the input.
@@ -48,7 +55,7 @@ def test():
              (MyFloat(), 3.14),
              (MyInt(), 389)
              ]
-    
+
     for val, jval in pairs:
         if jval is None:
             jval = val
@@ -59,13 +66,14 @@ def test():
         json.loads(json.dumps(out))
 
 
+@pytest.mark.skipif(JUPYTER_CLIENT_MAJOR_VERSION >= 7, reason="json_clean is a no-op")
 def test_encode_images():
     # invalid data, but the header and footer are from real files
     pngdata = b'\x89PNG\r\n\x1a\nblahblahnotactuallyvalidIEND\xaeB`\x82'
     jpegdata = b'\xff\xd8\xff\xe0\x00\x10JFIFblahblahjpeg(\xa0\x0f\xff\xd9'
     pdfdata = b'%PDF-1.\ntrailer<</Root<</Pages<</Kids[<</MediaBox[0 0 3 3]>>]>>>>>>'
     bindata = b'\xff\xff\xff\xff'
-    
+
     fmt = {
         'image/png'  : pngdata,
         'image/jpeg' : jpegdata,
@@ -79,30 +87,28 @@ def test_encode_images():
         assert decoded == value
     encoded2 = json_clean(encode_images(encoded))
     assert encoded == encoded2
-    
-    # test that we don't double-encode base64 str
-    b64_str = {}
-    for key, encoded in encoded.items():
-        b64_str[key] = unicode_to_str(encoded)
-    encoded3 = json_clean(encode_images(b64_str))
-    assert encoded3 == b64_str
+
     for key, value in fmt.items():
-        decoded = a2b_base64(encoded3[key])
+        decoded = a2b_base64(encoded[key])
         assert decoded == value
 
+@pytest.mark.skipif(JUPYTER_CLIENT_MAJOR_VERSION >= 7, reason="json_clean is a no-op")
 def test_lambda():
-    with nt.assert_raises(ValueError):
+    with pytest.raises(ValueError):
         json_clean(lambda : 1)
 
 
+@pytest.mark.skipif(JUPYTER_CLIENT_MAJOR_VERSION >= 7, reason="json_clean is a no-op")
 def test_exception():
     bad_dicts = [{1:'number', '1':'string'},
                  {True:'bool', 'True':'string'},
                  ]
     for d in bad_dicts:
-        nt.assert_raises(ValueError, json_clean, d)
+        with pytest.raises(ValueError):
+            json_clean(d)
 
 
+@pytest.mark.skipif(JUPYTER_CLIENT_MAJOR_VERSION >= 7, reason="json_clean is a no-op")
 def test_unicode_dict():
     data = {'üniço∂e': 'üniço∂e'}
     clean = jsonutil.json_clean(data)

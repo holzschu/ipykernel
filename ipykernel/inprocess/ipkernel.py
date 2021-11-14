@@ -49,10 +49,10 @@ class InProcessKernel(IPythonKernel):
     #-------------------------------------------------------------------------
 
     shell_class = Type(allow_none=True)
-    shell_streams = List()
-    control_stream = Any()
     _underlying_iopub_socket = Instance(DummySocket, ())
     iopub_thread = Instance(IOPubThread)
+
+    shell_stream = Instance(DummySocket, ())
 
     @default('iopub_thread')
     def _default_iopub_thread(self):
@@ -74,17 +74,21 @@ class InProcessKernel(IPythonKernel):
         self._underlying_iopub_socket.observe(self._io_dispatch, names=['message_sent'])
         self.shell.kernel = self
 
-    def execute_request(self, stream, ident, parent):
+    async def execute_request(self, stream, ident, parent):
         """ Override for temporary IO redirection. """
         with self._redirected_io():
-            super(InProcessKernel, self).execute_request(stream, ident, parent)
+            await super(InProcessKernel, self).execute_request(stream, ident, parent)
 
     def start(self):
         """ Override registration of dispatchers for streams. """
         self.shell.exit_now = False
 
-    def _abort_queues(self):
+    async def _abort_queues(self):
         """ The in-process kernel doesn't abort requests. """
+        pass
+
+    async def _flush_control_queue(self):
+        """No need to flush control queues for in-process"""
         pass
 
     def _input_request(self, prompt, ident, parent, password=False):
@@ -127,7 +131,7 @@ class InProcessKernel(IPythonKernel):
     def _io_dispatch(self, change):
         """ Called when a message is sent to the IO socket.
         """
-        ident, msg = self.session.recv(self.iopub_socket, copy=False)
+        ident, msg = self.session.recv(self.iopub_socket.io_thread.socket, copy=False)
         for frontend in self.frontends:
             frontend.iopub_channel.call_handlers(msg)
 
@@ -148,11 +152,13 @@ class InProcessKernel(IPythonKernel):
 
     @default('stdout')
     def _default_stdout(self):
-        return OutStream(self.session, self.iopub_thread, 'stdout')
+        return OutStream(self.session, self.iopub_thread, 'stdout',
+                         watchfd=False)
 
     @default('stderr')
     def _default_stderr(self):
-        return OutStream(self.session, self.iopub_thread, 'stderr')
+        return OutStream(self.session, self.iopub_thread, 'stderr',
+                         watchfd=False)
 
 #-----------------------------------------------------------------------------
 # Interactive shell subclass
@@ -169,12 +175,9 @@ class InProcessInteractiveShell(ZMQInteractiveShell):
 
     def enable_gui(self, gui=None):
         """Enable GUI integration for the kernel."""
-        from ipykernel.eventloops import enable_gui
         if not gui:
             gui = self.kernel.gui
-        enable_gui(gui, kernel=self.kernel)
         self.active_eventloop = gui
-
 
     def enable_matplotlib(self, gui=None):
         """Enable matplotlib integration for the kernel."""

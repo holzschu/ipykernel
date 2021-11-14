@@ -4,12 +4,12 @@
 # Distributed under the terms of the Modified BSD License.
 
 import atexit
-import os
 import sys
+from time import time
 
 from contextlib import contextmanager
 from queue import Empty
-from subprocess import PIPE, STDOUT
+from subprocess import STDOUT
 
 import nose
 
@@ -17,7 +17,7 @@ from jupyter_client import manager
 
 
 STARTUP_TIMEOUT = 60
-TIMEOUT = 15
+TIMEOUT = 60
 
 KM = None
 KC = None
@@ -42,14 +42,29 @@ def flush_channels(kc=None):
 
     if kc is None:
         kc = KC
-    for channel in (kc.shell_channel, kc.iopub_channel):
+    for get_msg in (kc.get_shell_msg, kc.get_iopub_msg):
         while True:
             try:
-                msg = channel.get_msg(block=True, timeout=0.1)
+                msg = get_msg(timeout=0.1)
             except Empty:
                 break
             else:
                 validate_message(msg)
+
+
+def get_reply(kc, msg_id, timeout=TIMEOUT, channel='shell'):
+    t0 = time()
+    while True:
+        get_msg = getattr(kc, f'get_{channel}_msg')
+        reply = get_msg(timeout=timeout)
+        if reply['parent_header']['msg_id'] == msg_id:
+            break
+        # Allow debugging ignored replies
+        print(f"Ignoring reply not to {msg_id}: {reply}")
+        t1 = time()
+        timeout -= t1 - t0
+        t0 = t1
+    return reply
 
 
 def execute(code='', kc=None, **kwargs):
@@ -58,7 +73,7 @@ def execute(code='', kc=None, **kwargs):
     if kc is None:
         kc = KC
     msg_id = kc.execute(code=code, **kwargs)
-    reply = kc.get_shell_msg(timeout=TIMEOUT)
+    reply = get_reply(kc, msg_id, TIMEOUT)
     validate_message(reply, 'execute_reply', msg_id)
     busy = kc.get_iopub_msg(timeout=TIMEOUT)
     validate_message(busy, 'status', msg_id)
@@ -135,12 +150,12 @@ def new_kernel(argv=None):
         kwargs['extra_arguments'] = argv
     return manager.run_kernel(**kwargs)
 
-def assemble_output(iopub):
+def assemble_output(get_msg):
     """assemble stdout/err from an execution"""
     stdout = ''
     stderr = ''
     while True:
-        msg = iopub.get_msg(block=True, timeout=1)
+        msg = get_msg(timeout=1)
         msg_type = msg['msg_type']
         content = msg['content']
         if msg_type == 'status' and content['execution_state'] == 'idle':
@@ -160,7 +175,7 @@ def assemble_output(iopub):
 
 def wait_for_idle(kc):
     while True:
-        msg = kc.iopub_channel.get_msg(block=True, timeout=1)
+        msg = kc.get_iopub_msg(timeout=1)
         msg_type = msg['msg_type']
         content = msg['content']
         if msg_type == 'status' and content['execution_state'] == 'idle':
