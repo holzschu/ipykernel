@@ -11,8 +11,9 @@
 # Imports
 #-----------------------------------------------------------------------------
 
+import asyncio
+
 # IPython imports
-from ipykernel.inprocess.socket import DummySocket
 from traitlets import Type, Instance, default
 from jupyter_client.clientabc import KernelClientABC
 from jupyter_client.client import KernelClient
@@ -171,13 +172,25 @@ class InProcessKernelClient(KernelClient):
         if kernel is None:
             raise RuntimeError('Cannot send request. No kernel exists.')
 
-        stream = DummySocket()
+        stream = kernel.shell_stream
         self.session.send(stream, msg)
         msg_parts = stream.recv_multipart()
-        kernel.dispatch_shell(stream, msg_parts)
-
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(kernel.dispatch_shell(msg_parts))
         idents, reply_msg = self.session.recv(stream, copy=False)
         self.shell_channel.call_handlers_later(reply_msg)
+
+    def get_shell_msg(self, block=True, timeout=None):
+        return  self.shell_channel.get_msg(block, timeout)
+
+    def get_iopub_msg(self, block=True, timeout=None):
+        return  self.iopub_channel.get_msg(block, timeout)
+
+    def get_stdin_msg(self, block=True, timeout=None):
+        return  self.stdin_channel.get_msg(block, timeout)
+
+    def get_control_msg(self, block=True, timeout=None):
+        return  self.control_channel.get_msg(block, timeout)
 
 
 #-----------------------------------------------------------------------------

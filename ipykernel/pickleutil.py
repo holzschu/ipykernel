@@ -2,8 +2,9 @@
 
 # Copyright (c) IPython Development Team.
 # Distributed under the terms of the Modified BSD License.
-
+import typing
 import warnings
+
 warnings.warn("ipykernel.pickleutil is deprecated. It has moved to ipyparallel.",
     DeprecationWarning,
     stacklevel=2
@@ -14,16 +15,10 @@ import sys
 import pickle
 from types import FunctionType
 
-from ipython_genutils.importstring import import_item
-from ipython_genutils.py3compat import buffer_to_bytes
+from traitlets.utils.importstring import import_item
 
 # This registers a hook when it's imported
-try:
-    # available since ipyparallel 5.1.1
-    from ipyparallel.serialize import codeutil
-except ImportError:
-    # Deprecated since ipykernel 4.3.1
-    from ipykernel import codeutil
+from ipyparallel.serialize import codeutil  # noqa F401
 
 from traitlets.log import get_logger
 
@@ -67,7 +62,7 @@ def interactive(f):
 
 def use_dill():
     """use dill to expand serialization support
-    
+
     adds support for object methods and closures to serialization.
     """
     # import dill causes most of the magic
@@ -91,7 +86,7 @@ def use_dill():
 
 def use_cloudpickle():
     """use cloudpickle to expand serialization support
-    
+
     adds support for object methods and closures to serialization.
     """
     import cloudpickle
@@ -118,18 +113,19 @@ def use_cloudpickle():
 class CannedObject(object):
     def __init__(self, obj, keys=[], hook=None):
         """can an object for safe pickling
-        
+
         Parameters
-        ==========
-        
-        obj:
+        ----------
+        obj
             The object to be canned
-        keys: list (optional)
+        keys : list (optional)
             list of attribute names that will be explicitly canned / uncanned
-        hook: callable (optional)
+        hook : callable (optional)
             An optional extra callable,
             which can do additional processing of the uncanned object.
-        
+
+        Notes
+        -----
         large data may be offloaded into the buffers list,
         used for zero-copy transfers.
         """
@@ -283,11 +279,18 @@ class CannedArray(CannedObject):
 
 
 class CannedBytes(CannedObject):
-    wrap = staticmethod(buffer_to_bytes)
+    @staticmethod
+    def wrap(buf: typing.Union[memoryview, bytes, typing.SupportsBytes]) -> bytes:
+        """Cast a buffer or memoryview object to bytes"""
+        if isinstance(buf, memoryview):
+            return buf.tobytes()
+        if not isinstance(buf, bytes):
+            return bytes(buf)
+        return buf
 
     def __init__(self, obj):
         self.buffers = [obj]
-    
+
     def get_object(self, g=None):
         data = self.buffers[0]
         return self.wrap(data)
@@ -304,7 +307,7 @@ class CannedMemoryView(CannedBytes):
 
 def _import_mapping(mapping, original=None):
     """import any string-keys in a type mapping
-    
+
     """
     log = get_logger()
     log.debug("Importing canning map")
@@ -322,7 +325,7 @@ def _import_mapping(mapping, original=None):
 
 def istype(obj, check):
     """like isinstance(obj, check), but strict
-    
+
     This won't catch subclasses.
     """
     if isinstance(check, tuple):

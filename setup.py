@@ -3,32 +3,16 @@
 # Copyright (c) IPython Development Team.
 # Distributed under the terms of the Modified BSD License.
 
-# the name of the package
-name = 'ipykernel'
-
-#-----------------------------------------------------------------------------
-# Minimal Python version sanity check
-#-----------------------------------------------------------------------------
-
 import sys
-import re
-
-v = sys.version_info
-if v[:2] < (3, 5):
-    error = "ERROR: %s requires Python version 3.5 or above." % name
-    print(error, file=sys.stderr)
-    sys.exit(1)
-
-#-----------------------------------------------------------------------------
-# get on with it
-#-----------------------------------------------------------------------------
-
 from glob import glob
 import os
 import shutil
 
 from setuptools import setup
 from setuptools.command.bdist_egg import bdist_egg
+
+# the name of the package
+name = 'ipykernel'
 
 
 class bdist_egg_disabled(bdist_egg):
@@ -54,20 +38,11 @@ package_data = {
     'ipykernel': ['resources/*.*'],
 }
 
-version_ns = {}
-with open(pjoin(here, name, '_version.py')) as f:
-    exec(f.read(), {}, version_ns)
-
-current_version = version_ns['__version__']
-
-loose_pep440re = re.compile(r'^(\d+)\.(\d+)\.(\d+((a|b|rc)\d+)?)(\.post\d+)?(\.dev\d*)?$')
-if not loose_pep440re.match(current_version):
-    raise ValueError("Version number '%s' is not valid (should match [N!]N(.N)*[{a|b|rc}N][.postN][.devN])" % current_version)
-
+with open(pjoin(here, 'README.md')) as fid:
+    LONG_DESCRIPTION = fid.read()
 
 setup_args = dict(
     name=name,
-    version=current_version,
     cmdclass={
         'bdist_egg': bdist_egg if 'bdist_egg' in sys.argv else bdist_egg_disabled,
     },
@@ -76,27 +51,33 @@ setup_args = dict(
     py_modules=['ipykernel_launcher'],
     package_data=package_data,
     description="IPython Kernel for Jupyter",
+    long_description_content_type="text/markdown",
     author='IPython Development Team',
     author_email='ipython-dev@scipy.org',
     url='https://ipython.org',
     license='BSD',
-    long_description="The IPython kernel for Jupyter",
+    long_description=LONG_DESCRIPTION,
     platforms="Linux, Mac OS X, Windows",
     keywords=['Interactive', 'Interpreter', 'Shell', 'Web'],
-    python_requires='>=3.5',
+    python_requires='>=3.7',
     install_requires=[
-        'ipython>=5.0.0',
-        'traitlets>=4.1.0',
-        'jupyter_client',
-        'tornado>=4.2',
+        'importlib-metadata<5;python_version<"3.8.0"',
+        'argcomplete>=1.12.3;python_version<"3.8.0"',
+        'debugpy>=1.0.0,<2.0',
+        'ipython>=7.23.1',
+        'traitlets>=5.1.0,<6.0',
+        'jupyter_client<8.0',
+        'tornado>=4.2,<7.0',
+        'matplotlib-inline>=0.1.0,<0.2.0',
         'appnope;platform_system=="Darwin"',
     ],
     extras_require={
-        'test': [
-            'pytest !=5.3.4',
-            'pytest-cov',
-            'flaky',
-            'nose',  # nose because there are still a few nose.tools imports hanging around
+        "test": [
+            "pytest !=5.3.4",
+            "pytest-cov",
+            "flaky",
+            "nose",  # nose because we are still using nose streams from ipython
+            "ipyparallel",
         ],
     },
     classifiers=[
@@ -106,11 +87,15 @@ setup_args = dict(
         'License :: OSI Approved :: BSD License',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9'
     ],
 )
 
 
 if any(a.startswith(('bdist', 'install')) for a in sys.argv):
+    sys.path.insert(0, here)
     from ipykernel.kernelspec import write_kernel_spec, make_ipkernel_cmd, KERNEL_NAME
 
     # When building a wheel, the executable specified in the kernelspec is simply 'python'.

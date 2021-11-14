@@ -16,13 +16,10 @@ machinery.  This should thus be thought of as scaffolding.
 
 import os
 import sys
-import time
 import warnings
 from threading import local
 # iOS addition:
 import subprocess
-
-from tornado import ioloop
 
 from IPython.core.interactiveshell import (
     InteractiveShell, InteractiveShellABC
@@ -42,7 +39,6 @@ from ipykernel import (
 from IPython.utils import openpy
 from ipykernel.jsonutil import json_clean, encode_images
 from IPython.utils.process import arg_split, system
-from ipython_genutils import py3compat
 from traitlets import (
     Instance, Type, Dict, CBool, CBytes, Any, default, observe
 )
@@ -51,16 +47,10 @@ from ipykernel.displayhook import ZMQShellDisplayHook
 from jupyter_core.paths import jupyter_runtime_dir
 from jupyter_client.session import extract_header, Session
 
-try:
-    # available since ipyparallel 5.0.0
-    from ipyparallel.engine.datapub import ZMQDataPublisher
-except ImportError:
-    # Deprecated since ipykernel 4.3.0
-    from ipykernel.datapub import ZMQDataPublisher
-
 #-----------------------------------------------------------------------------
 # Functions and classes
 #-----------------------------------------------------------------------------
+
 
 class ZMQDisplayPublisher(DisplayPublisher):
     """A display publisher that publishes data using a ZeroMQ PUB socket."""
@@ -96,22 +86,26 @@ class ZMQDisplayPublisher(DisplayPublisher):
             self._thread_local.hooks = []
         return self._thread_local.hooks
 
-    def publish(self, data, metadata=None, source=None, transient=None,
+    def publish(
+        self,
+        data,
+        metadata=None,
+        transient=None,
         update=False,
     ):
         """Publish a display-data message
 
         Parameters
         ----------
-        data: dict
+        data : dict
             A mime-bundle dict, keyed by mime-type.
-        metadata: dict, optional
+        metadata : dict, optional
             Metadata associated with the data.
-        transient: dict, optional, keyword-only
+        transient : dict, optional, keyword-only
             Transient data that may only be relevant during a live display,
             such as display_id.
             Transient data should not be persisted to documents.
-        update: bool, optional, keyword-only
+        update : bool, optional, keyword-only
             If True, send an update_display_data message instead of display_data.
         """
         self._flush_streams()
@@ -152,7 +146,7 @@ class ZMQDisplayPublisher(DisplayPublisher):
 
         Parameters
         ----------
-        wait: bool (default: False)
+        wait : bool (default: False)
             If True, the output will not be cleared immediately,
             instead waiting for the next display before clearing.
             This reduces bounce during repeated clear & display loops.
@@ -176,7 +170,6 @@ class ZMQDisplayPublisher(DisplayPublisher):
         Returns
         -------
         Either a publishable message, or `None`.
-
         The DisplayHook objects must return a message from
         the __call__ method if they still require the
         `session.send` method to be called after transformation.
@@ -191,13 +184,13 @@ class ZMQDisplayPublisher(DisplayPublisher):
 
         Parameters
         ----------
-        hook: Any callable object which has previously been
-              registered as a hook.
+        hook : Any callable object which has previously been
+            registered as a hook.
 
         Returns
         -------
         bool - `True` if the hook was removed, `False` if it wasn't
-               found.
+            found.
         """
         try:
             self._hooks.remove(hook)
@@ -447,7 +440,7 @@ class ZMQInteractiveShell(InteractiveShell):
 
     displayhook_class = Type(ZMQShellDisplayHook)
     display_pub_class = Type(ZMQDisplayPublisher)
-    data_pub_class = Type(ZMQDataPublisher)
+    data_pub_class = Any()
     kernel = Any()
     parent_header = Any()
 
@@ -473,8 +466,9 @@ class ZMQInteractiveShell(InteractiveShell):
     def _update_exit_now(self, change):
         """stop eventloop when exit_now fires"""
         if change['new']:
-            loop = self.kernel.io_loop
-            loop.call_later(0.1, loop.stop)
+            if hasattr(self.kernel, 'io_loop'):
+                loop = self.kernel.io_loop
+                loop.call_later(0.1, loop.stop)
             if self.kernel.eventloop:
                 exit_hook = getattr(self.kernel.eventloop, 'exit_hook', None)
                 if exit_hook:
@@ -533,7 +527,7 @@ class ZMQInteractiveShell(InteractiveShell):
         payload = dict(
             source='ask_exit',
             keepkernel=self.keepkernel_on_exit,
-            )
+        )
         self.payload_manager.write_payload(payload)
 
     def run_cell(self, *args, **kwargs):
@@ -548,7 +542,7 @@ class ZMQInteractiveShell(InteractiveShell):
         exc_content = {
             'traceback' : stb,
             'ename' : str(etype.__name__),
-            'evalue' : py3compat.safe_unicode(evalue),
+            'evalue' : str(evalue),
         }
 
         dh = self.displayhook
@@ -558,8 +552,13 @@ class ZMQInteractiveShell(InteractiveShell):
         if dh.topic:
             topic = dh.topic.replace(b'execute_result', b'error')
 
-        exc_msg = dh.session.send(dh.pub_socket, 'error', json_clean(exc_content),
-                                  dh.parent_header, ident=topic)
+        dh.session.send(
+            dh.pub_socket,
+            "error",
+            json_clean(exc_content),
+            dh.parent_header,
+            ident=topic,
+        )
 
         # FIXME - Once we rely on Python 3, the traceback is stored on the
         # exception object, so we shouldn't need to store it here.
@@ -612,9 +611,9 @@ class ZMQInteractiveShell(InteractiveShell):
         Parameters
         ----------
         cmd : str
-          Command to execute (can not end in '&', as background processes are
-          not supported.  Should not be a command that expects input
-          other than simple text.
+            Command to execute (can not end in '&', as background processes are
+            not supported.  Should not be a command that expects input
+            other than simple text.
         """
         if cmd.rstrip().endswith('&'):
             # this is *far* from a rigorous test

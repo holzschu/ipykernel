@@ -9,15 +9,15 @@ import signal
 import sys
 
 from IPython.core import release
-from ipython_genutils.py3compat import safe_unicode
 from IPython.utils.tokenutil import token_at_cursor, line_at_cursor
-from tornado import gen
 from traitlets import Instance, Type, Any, List, Bool, observe, observe_compat
+from zmq.eventloop.zmqstream import ZMQStream
 
 from .comm import CommManager
 from .kernelbase import Kernel as KernelBase
 from .zmqshell import ZMQInteractiveShell
 from .eventloops import _use_appnope
+from .compiler import XCachingCompiler
 
 try:
     from IPython.core.interactiveshell import _asyncio_runner
@@ -25,10 +25,20 @@ except ImportError:
     _asyncio_runner = None
 
 try:
-    from IPython.core.completer import rectify_completions as _rectify_completions, provisionalcompleter as _provisionalcompleter
+    from IPython.core.completer import (
+        rectify_completions as _rectify_completions,
+        provisionalcompleter as _provisionalcompleter,
+    )
     _use_experimental_60_completion = True
 except ImportError:
     _use_experimental_60_completion = False
+
+try:
+    import debugpy
+    from .debugger import Debugger
+    _is_debugpy_available = True
+except ImportError:
+    _is_debugpy_available = False
 
 _EXPERIMENTAL_KEY_NAME = '_jupyter_types_experimental'
 
@@ -41,6 +51,8 @@ class IPythonKernel(KernelBase):
     use_experimental_completions = Bool(True,
         help="Set this flag to False to deactivate the use of experimental IPython completion APIs.",
     ).tag(config=True)
+
+    debugpy_stream = Instance(ZMQStream, allow_none=True) if _is_debugpy_available else None
 
     user_module = Any()
     @observe('user_module')
@@ -65,12 +77,21 @@ class IPythonKernel(KernelBase):
     def __init__(self, **kwargs):
         super(IPythonKernel, self).__init__(**kwargs)
 
+        # Initialize the Debugger
+        if _is_debugpy_available:
+            self.debugger = Debugger(self.log,
+                                    self.debugpy_stream,
+                                    self._publish_debug_event,
+                                    self.debug_shell_socket,
+                                    self.session)
+
         # Initialize the InteractiveShell subclass
         self.shell = self.shell_class.instance(parent=self,
             profile_dir = self.profile_dir,
             user_module = self.user_module,
             user_ns     = self.user_ns,
             kernel      = self,
+            compiler_class = XCachingCompiler,
         )
         self.shell.displayhook.session = self.session
         self.shell.displayhook.pub_socket = self.iopub_socket
@@ -137,20 +158,32 @@ class IPythonKernel(KernelBase):
         'file_extension': '.py'
     }
 
+    def dispatch_debugpy(self, msg):
+        if _is_debugpy_available:
+            # The first frame is the socket id, we can drop it
+            frame = msg[1].bytes.decode('utf-8')
+            self.log.debug("Debugpy received: %s", frame)
+            self.debugger.tcp_client.receive_dap_frame(frame)
+
     @property
     def banner(self):
         return self.shell.banner
 
     def start(self):
         self.shell.exit_now = False
+        if self.debugpy_stream is None:
+            self.log.warning("debugpy_stream undefined, debugging will not be enabled")
+        else:
+            self.debugpy_stream.on_recv(self.dispatch_debugpy, copy=False)
         super(IPythonKernel, self).start()
 
-    def set_parent(self, ident, parent):
+    def set_parent(self, ident, parent, channel='shell'):
         """Overridden from parent to tell the display hook and output streams
         about the parent message.
         """
-        super(IPythonKernel, self).set_parent(ident, parent)
-        self.shell.set_parent(parent)
+        super(IPythonKernel, self).set_parent(ident, parent, channel)
+        if channel == 'shell':
+            self.shell.set_parent(parent)
 
     def init_metadata(self, parent):
         """Initialize metadata.
@@ -173,9 +206,12 @@ class IPythonKernel(KernelBase):
         """
         # FIXME: remove deprecated ipyparallel-specific code
         # This is required by ipyparallel < 5.0
-        metadata['status'] = reply_content['status']
-        if reply_content['status'] == 'error' and reply_content['ename'] == 'UnmetDependency':
-                metadata['dependencies_met'] = False
+        metadata["status"] = reply_content["status"]
+        if (
+            reply_content["status"] == "error"
+            and reply_content["ename"] == "UnmetDependency"
+        ):
+            metadata["dependencies_met"] = False
 
         return metadata
 
@@ -255,9 +291,8 @@ class IPythonKernel(KernelBase):
             # restore the previous sigint handler
             signal.signal(signal.SIGINT, save_sigint)
 
-    @gen.coroutine
-    def do_execute(self, code, silent, store_history=True,
-                   user_expressions=None, allow_stdin=False):
+    async def do_execute(self, code, silent, store_history=True,
+                         user_expressions=None, allow_stdin=False):
         shell = self.shell # we'll need this a lot here
 
         self._forward_input(allow_stdin)
@@ -270,27 +305,43 @@ class IPythonKernel(KernelBase):
             should_run_async = lambda cell: False
             # older IPython,
             # use blocking run_cell and wrap it in coroutine
-            @gen.coroutine
-            def run_cell(*args, **kwargs):
+            async def run_cell(*args, **kwargs):
                 return shell.run_cell(*args, **kwargs)
         try:
 
             # default case: runner is asyncio and asyncio is already running
             # TODO: this should check every case for "are we inside the runner",
             # not just asyncio
+            preprocessing_exc_tuple = None
+            try:
+                transformed_cell = self.shell.transform_cell(code)
+            except Exception:
+                transformed_cell = code
+                preprocessing_exc_tuple = sys.exc_info()
+
             if (
                 _asyncio_runner
-                and should_run_async(code)
                 and shell.loop_runner is _asyncio_runner
                 and asyncio.get_event_loop().is_running()
+                and should_run_async(
+                    code,
+                    transformed_cell=transformed_cell,
+                    preprocessing_exc_tuple=preprocessing_exc_tuple,
+                )
             ):
-                coro = run_cell(code, store_history=store_history, silent=silent)
+                coro = run_cell(
+                    code,
+                    store_history=store_history,
+                    silent=silent,
+                    transformed_cell=transformed_cell,
+                    preprocessing_exc_tuple=preprocessing_exc_tuple
+                )
                 coro_future = asyncio.ensure_future(coro)
 
                 with self._cancel_on_sigint(coro_future):
                     res = None
                     try:
-                        res = yield coro_future
+                        res = await coro_future
                     finally:
                         shell.events.trigger('post_execute')
                         if not silent:
@@ -316,7 +367,7 @@ class IPythonKernel(KernelBase):
             reply_content.update({
                 'traceback': shell._last_traceback or [],
                 'ename': str(type(err).__name__),
-                'evalue': safe_unicode(err),
+                'evalue': str(err),
             })
 
             # FIXME: deprecated piece for ipyparallel (remove in 5.0):
@@ -370,16 +421,20 @@ class IPythonKernel(KernelBase):
                 'metadata' : {},
                 'status' : 'ok'}
 
+    async def do_debug_request(self, msg):
+        if _is_debugpy_available:
+            return await self.debugger.process_request(msg)
+
     def _experimental_do_complete(self, code, cursor_pos):
         """
-        Experimental completions from IPython, using Jedi. 
+        Experimental completions from IPython, using Jedi.
         """
         if cursor_pos is None:
             cursor_pos = len(code)
         with _provisionalcompleter():
             raw_completions = self.shell.Completer.completions(code, cursor_pos)
             completions = list(_rectify_completions(code, raw_completions))
-            
+
             comps = []
             for comp in completions:
                 comps.append(dict(
@@ -403,8 +458,6 @@ class IPythonKernel(KernelBase):
                 'cursor_start': s,
                 'metadata': {_EXPERIMENTAL_KEY_NAME: comps},
                 'status': 'ok'}
-
-
 
     def do_inspect(self, code, cursor_pos, detail_level=0):
         name = token_at_cursor(code, cursor_pos)
@@ -500,16 +553,16 @@ class IPythonKernel(KernelBase):
             # invoke IPython traceback formatting
             shell.showtraceback()
             reply_content = {
-                'traceback': shell._last_traceback or [],
-                'ename': str(type(e).__name__),
-                'evalue': safe_unicode(e),
+                "traceback": shell._last_traceback or [],
+                "ename": str(type(e).__name__),
+                "evalue": str(e),
             }
             # FIXME: deprecated piece for ipyparallel (remove in 5.0):
             e_info = dict(engine_uuid=self.ident, engine_id=self.int_id, method='apply')
             reply_content['engine_info'] = e_info
 
             self.send_response(self.iopub_socket, 'error', reply_content,
-                               ident=self._topic('error'))
+                               ident=self._topic('error'), channel='shell')
             self.log.info("Exception in apply request:\n%s", '\n'.join(reply_content['traceback']))
             result_buf = []
             reply_content['status'] = 'error'

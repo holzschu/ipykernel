@@ -3,13 +3,12 @@
 # Copyright (c) IPython Development Team.
 # Distributed under the terms of the Modified BSD License.
 
-import sys
 import logging
 
 from traitlets.config import LoggingConfigurable
 
-from ipython_genutils.importstring import import_item
-from traitlets import Instance, Unicode, Dict, Any, default
+from traitlets.utils.importstring import import_item
+from traitlets import Instance, Dict
 
 from .comm import Comm
 
@@ -94,7 +93,7 @@ class CommManager(LoggingConfigurable):
         # Failure.
         try:
             comm.close()
-        except:
+        except Exception:
             self.log.error("""Could not close comm during `comm_open` failure
                 clean-up.  The comm may not have been opened yet.""", exc_info=True)
 

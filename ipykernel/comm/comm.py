@@ -66,7 +66,7 @@ class Comm(LoggingConfigurable):
         self.kernel.session.send(self.kernel.iopub_socket, msg_type,
             content,
             metadata=json_clean(metadata),
-            parent=self.kernel._parent_header,
+            parent=self.kernel.get_parent("shell"),
             ident=self.topic,
             buffers=buffers,
         )
@@ -94,7 +94,7 @@ class Comm(LoggingConfigurable):
                               target_module=self.target_module,
                               )
             self._closed = False
-        except:
+        except Exception:
             comm_manager.unregister_comm(self)
             raise
 
