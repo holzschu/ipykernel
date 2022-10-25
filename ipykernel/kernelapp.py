@@ -190,6 +190,9 @@ class IPKernelApp(BaseIPythonApplication, InteractiveShellApp,
         if sys.platform == 'win32':
             if self.interrupt or self.parent_handle:
                 self.poller = ParentPollerWindows(self.interrupt, self.parent_handle)
+        # iOS: getppid() is 1 when the app is started from the springboard.
+        elif (sys.platform == "darwin" and os.uname().machine.startswith("iP")):
+            self.log.info("Deactivating parent poller for iOS")
         elif self.parent_handle and self.parent_handle != 1:
             # PID 1 (init) is special and will never go away,
             # only be reassigned.

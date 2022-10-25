@@ -33,11 +33,16 @@ try:
 except ImportError:
     _use_experimental_60_completion = False
 
-try:
-    import debugpy
-    from .debugger import Debugger
-    _is_debugpy_available = True
-except ImportError:
+# iOS: debugpy is not going to work with iOS restrictions
+import os
+if not (sys.platform == "darwin" and os.uname().machine.startswith("iP")):
+    try:
+        import debugpy
+        from .debugger import Debugger
+        _is_debugpy_available = True
+    except ImportError:
+        _is_debugpy_available = False
+else:
     _is_debugpy_available = False
 
 _EXPERIMENTAL_KEY_NAME = '_jupyter_types_experimental'
