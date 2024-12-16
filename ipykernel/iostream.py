@@ -3,40 +3,38 @@
 # Copyright (c) IPython Development Team.
 # Distributed under the terms of the Modified BSD License.
 
+import asyncio
 import atexit
-from binascii import b2a_hex
-from collections import deque
-from imp import lock_held as import_lock_held
+import contextvars
+import io
 import os
 import sys
 import threading
-import warnings
-from weakref import WeakSet
 import traceback
+import warnings
+from binascii import b2a_hex
+from collections import defaultdict, deque
 from io import StringIO, TextIOBase
-import io
+from threading import local
+from typing import Any, Callable, Deque, Dict, Optional
 
 import zmq
-if zmq.pyzmq_version_info() >= (17, 0):
-    from tornado.ioloop import IOLoop
-else:
-    # deprecated since pyzmq 17
-    from zmq.eventloop.ioloop import IOLoop
+from jupyter_client.session import extract_header
+from tornado.ioloop import IOLoop
 from zmq.eventloop.zmqstream import ZMQStream
 
-from jupyter_client.session import extract_header
-
-
-#-----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Globals
-#-----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 
 MASTER = 0
 CHILD = 1
 
-#-----------------------------------------------------------------------------
+PIPE_BUFFER_SIZE = 1000
+
+# -----------------------------------------------------------------------------
 # IO classes
-#-----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 
 
 class IOPubThread:
@@ -60,6 +58,7 @@ class IOPubThread:
             piped from subprocesses.
         """
         self.socket = socket
+        self._stopped = False
         self.background_socket = BackgroundSocket(self)
         self._master_pid = os.getpid()
         self._pipe_flag = pipe
@@ -67,19 +66,41 @@ class IOPubThread:
         if pipe:
             self._setup_pipe_in()
         self._local = threading.local()
-        self._events = deque()
-        self._event_pipes = WeakSet()
+        self._events: Deque[Callable[..., Any]] = deque()
+        self._event_pipes: Dict[threading.Thread, Any] = {}
+        self._event_pipe_gc_lock: threading.Lock = threading.Lock()
+        self._event_pipe_gc_seconds: float = 10
+        self._event_pipe_gc_task: Optional[asyncio.Task[Any]] = None
         self._setup_event_pipe()
         self.thread = threading.Thread(target=self._thread_main, name="IOPub")
         self.thread.daemon = True
-        self.thread.pydev_do_not_trace = True
-        self.thread.is_pydev_daemon_thread = True
+        self.thread.pydev_do_not_trace = True  # type:ignore[attr-defined]
+        self.thread.is_pydev_daemon_thread = True  # type:ignore[attr-defined]
         self.thread.name = "IOPub"
 
     def _thread_main(self):
         """The inner loop that's actually run in a thread"""
-        self.io_loop.make_current()
-        self.io_loop.start()
+
+        def _start_event_gc():
+            self._event_pipe_gc_task = asyncio.ensure_future(self._run_event_pipe_gc())
+
+        self.io_loop.run_sync(_start_event_gc)
+
+        if not self._stopped:
+            # avoid race if stop called before start thread gets here
+            # probably only comes up in tests
+            self.io_loop.start()
+
+        if self._event_pipe_gc_task is not None:
+            # cancel gc task to avoid pending task warnings
+            async def _cancel():
+                self._event_pipe_gc_task.cancel()  # type:ignore[union-attr]
+
+            if not self._stopped:
+                self.io_loop.run_sync(_cancel)
+            else:
+                self._event_pipe_gc_task.cancel()
+
         self.io_loop.close(all_fds=True)
 
     def _setup_event_pipe(self):
@@ -88,11 +109,31 @@ class IOPubThread:
         pipe_in = ctx.socket(zmq.PULL)
         pipe_in.linger = 0
 
-        _uuid = b2a_hex(os.urandom(16)).decode('ascii')
-        iface = self._event_interface = 'inproc://%s' % _uuid
+        _uuid = b2a_hex(os.urandom(16)).decode("ascii")
+        iface = self._event_interface = "inproc://%s" % _uuid
         pipe_in.bind(iface)
         self._event_puller = ZMQStream(pipe_in, self.io_loop)
         self._event_puller.on_recv(self._handle_event)
+
+    async def _run_event_pipe_gc(self):
+        """Task to run event pipe gc continuously"""
+        while True:
+            await asyncio.sleep(self._event_pipe_gc_seconds)
+            try:
+                await self._event_pipe_gc()
+            except Exception as e:
+                print(f"Exception in IOPubThread._event_pipe_gc: {e}", file=sys.__stderr__)
+
+    async def _event_pipe_gc(self):
+        """run a single garbage collection on event pipes"""
+        if not self._event_pipes:
+            # don't acquire the lock if there's nothing to do
+            return
+        with self._event_pipe_gc_lock:
+            for thread, socket in list(self._event_pipes.items()):
+                if not thread.is_alive():
+                    socket.close()
+                    del self._event_pipes[thread]
 
     @property
     def _event_pipe(self):
@@ -106,9 +147,11 @@ class IOPubThread:
             event_pipe.linger = 0
             event_pipe.connect(self._event_interface)
             self._local.event_pipe = event_pipe
-            # WeakSet so that event pipes will be closed by garbage collection
-            # when their threads are terminated
-            self._event_pipes.add(event_pipe)
+            # associate event pipes to their threads
+            # so they can be closed explicitly
+            # implicit close on __del__ throws a ResourceWarning
+            with self._event_pipe_gc_lock:
+                self._event_pipes[threading.current_thread()] = event_pipe
         return event_pipe
 
     def _handle_event(self, msg):
@@ -122,7 +165,7 @@ class IOPubThread:
         # freeze event count so new writes don't extend the queue
         # while we are processing
         n_events = len(self._events)
-        for i in range(n_events):
+        for _ in range(n_events):
             event_f = self._events.popleft()
             event_f()
 
@@ -139,8 +182,10 @@ class IOPubThread:
         try:
             self._pipe_port = pipe_in.bind_to_random_port("tcp://127.0.0.1")
         except zmq.ZMQError as e:
-            warnings.warn("Couldn't bind IOPub Pipe to 127.0.0.1: %s" % e +
-                "\nsubprocess output will be unavailable."
+            warnings.warn(
+                "Couldn't bind IOPub Pipe to 127.0.0.1: %s" % e
+                + "\nsubprocess output will be unavailable.",
+                stacklevel=2,
             )
             self._pipe_flag = False
             pipe_in.close()
@@ -161,7 +206,7 @@ class IOPubThread:
         # must be new context after fork
         ctx = zmq.Context()
         pipe_out = ctx.socket(zmq.PUSH)
-        pipe_out.linger = 3000 # 3s timeout for pipe_out sends before discarding the message
+        pipe_out.linger = 3000  # 3s timeout for pipe_out sends before discarding the message
         pipe_out.connect("tcp://127.0.0.1:%i" % self._pipe_port)
         return ctx, pipe_out
 
@@ -172,8 +217,7 @@ class IOPubThread:
         """check for forks, and switch to zmq pipeline if necessary"""
         if not self._pipe_flag or self._is_master_process():
             return MASTER
-        else:
-            return CHILD
+        return CHILD
 
     def start(self):
         """Start the IOPub thread"""
@@ -185,17 +229,24 @@ class IOPubThread:
 
     def stop(self):
         """Stop the IOPub thread"""
+        self._stopped = True
         if not self.thread.is_alive():
             return
         self.io_loop.add_callback(self.io_loop.stop)
-        self.thread.join()
+
+        self.thread.join(timeout=30)
+        if self.thread.is_alive():
+            # avoid infinite hang if stop fails
+            msg = "IOPub thread did not terminate in 30 seconds"
+            raise TimeoutError(msg)
         # close *all* event pipes, created in any thread
         # event pipes can only be used from other threads while self.thread.is_alive()
         # so after thread.join, this should be safe
-        for event_pipe in self._event_pipes:
+        for _thread, event_pipe in self._event_pipes.items():
             event_pipe.close()
 
     def close(self):
+        """Close the IOPub thread."""
         if self.closed:
             return
         self.socket.close()
@@ -213,7 +264,7 @@ class IOPubThread:
         if self.thread.is_alive():
             self._events.append(f)
             # wake event thread (message content is ignored)
-            self._event_pipe.send(b'')
+            self._event_pipe.send(b"")
         else:
             f()
 
@@ -222,10 +273,13 @@ class IOPubThread:
 
         If my thread isn't running (e.g. forked process), send immediately.
         """
-        self.schedule(lambda : self._really_send(*args, **kwargs))
+        self.schedule(lambda: self._really_send(*args, **kwargs))
 
     def _really_send(self, msg, *args, **kwargs):
         """The callback that actually sends messages"""
+        if self.closed:
+            return
+
         mp_mode = self._check_mp_mode()
 
         if mp_mode != CHILD:
@@ -236,23 +290,26 @@ class IOPubThread:
             # new context/socket for every pipe-out
             # since forks don't teardown politely, use ctx.term to ensure send has completed
             ctx, pipe_out = self._setup_pipe_out()
-            pipe_out.send_multipart([self._pipe_uuid] + msg, *args, **kwargs)
+            pipe_out.send_multipart([self._pipe_uuid, *msg], *args, **kwargs)
             pipe_out.close()
             ctx.term()
 
 
 class BackgroundSocket:
     """Wrapper around IOPub thread that provides zmq send[_multipart]"""
+
     io_thread = None
 
     def __init__(self, io_thread):
+        """Initialize the socket."""
         self.io_thread = io_thread
 
     def __getattr__(self, attr):
         """Wrap socket attr access for backward-compatibility"""
-        if attr.startswith('__') and attr.endswith('__'):
+        if attr.startswith("__") and attr.endswith("__"):
             # don't wrap magic methods
-            super().__getattr__(attr)
+            super().__getattr__(attr)  # type:ignore[misc]
+        assert self.io_thread is not None
         if hasattr(self.io_thread.socket, attr):
             warnings.warn(
                 f"Accessing zmq Socket attribute {attr} on BackgroundSocket"
@@ -262,10 +319,11 @@ class BackgroundSocket:
                 stacklevel=2,
             )
             return getattr(self.io_thread.socket, attr)
-        super().__getattr__(attr)
+        return super().__getattr__(attr)  # type:ignore[misc]
 
     def __setattr__(self, attr, value):
-        if attr == 'io_thread' or (attr.startswith('__' and attr.endswith('__'))):
+        """Set an attribute on the socket."""
+        if attr == "io_thread" or (attr.startswith("__") and attr.endswith("__")):
             super().__setattr__(attr, value)
         else:
             warnings.warn(
@@ -275,13 +333,16 @@ class BackgroundSocket:
                 DeprecationWarning,
                 stacklevel=2,
             )
+            assert self.io_thread is not None
             setattr(self.io_thread.socket, attr, value)
 
     def send(self, msg, *args, **kwargs):
+        """Send a message to the socket."""
         return self.send_multipart([msg], *args, **kwargs)
 
     def send_multipart(self, *args, **kwargs):
         """Schedule send in IO thread"""
+        assert self.io_thread is not None
         return self.io_thread.send_multipart(*args, **kwargs)
 
 
@@ -297,8 +358,8 @@ class OutStream(TextIOBase):
     # The time interval between automatic flushes, in seconds.
     flush_interval = 0.2
     topic = None
-    encoding = 'UTF-8'
-
+    encoding = "UTF-8"
+    _exc: Optional[Any] = None
 
     def fileno(self):
         """
@@ -306,12 +367,12 @@ class OutStream(TextIOBase):
         """
         if getattr(self, "_original_stdstream_copy", None) is not None:
             return self._original_stdstream_copy
-        else:
-            raise io.UnsupportedOperation("fileno")
+        msg = "fileno"
+        raise io.UnsupportedOperation(msg)
 
     def _watch_pipe_fd(self):
         """
-        We've redirected standards steams 0 and 1 into a pipe.
+        We've redirected standards streams 0 and 1 into a pipe.
 
         We need to watch in a thread and redirect them to the right places.
 
@@ -323,36 +384,51 @@ class OutStream(TextIOBase):
         """
 
         try:
-            bts = os.read(self._fid, 1000)
+            bts = os.read(self._fid, PIPE_BUFFER_SIZE)
             while bts and self._should_watch:
-                self.write(bts.decode())
+                self.write(bts.decode(errors="replace"))
                 os.write(self._original_stdstream_copy, bts)
-                bts = os.read(self._fid, 1000)
+                bts = os.read(self._fid, PIPE_BUFFER_SIZE)
         except Exception:
             self._exc = sys.exc_info()
 
     def __init__(
-        self, session, pub_thread, name, pipe=None, echo=None, *, watchfd=True, isatty=False,
+        self,
+        session,
+        pub_thread,
+        name,
+        pipe=None,
+        echo=None,
+        *,
+        watchfd=True,
+        isatty=False,
     ):
         """
         Parameters
         ----------
+        session : object
+            the session object
+        pub_thread : threading.Thread
+            the publication thread
         name : str {'stderr', 'stdout'}
             the name of the standard stream to replace
+        pipe : object
+            the pipe object
+        echo : bool
+            whether to echo output
         watchfd : bool (default, True)
-            Watch the file descripttor corresponding to the replaced stream.
+            Watch the file descriptor corresponding to the replaced stream.
             This is useful if you know some underlying code will write directly
             the file descriptor by its number. It will spawn a watching thread,
             that will swap the give file descriptor for a pipe, read from the
             pipe, and insert this into the current Stream.
         isatty : bool (default, False)
-            Indication of whether this stream has termimal capabilities (e.g. can handle colors)
+            Indication of whether this stream has terminal capabilities (e.g. can handle colors)
 
         """
         if pipe is not None:
             warnings.warn(
-                "pipe argument to OutStream is deprecated and ignored",
-                " since ipykernel 4.2.3.",
+                "pipe argument to OutStream is deprecated and ignored since ipykernel 4.2.3.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -371,30 +447,84 @@ class OutStream(TextIOBase):
         self.pub_thread = pub_thread
         self.name = name
         self.topic = b"stream." + name.encode()
-        self.parent_header = {}
+        self._parent_header: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
+            "parent_header"
+        )
+        self._parent_header.set({})
+        self._thread_to_parent = {}
+        self._thread_to_parent_header = {}
+        self._parent_header_global = {}
         self._master_pid = os.getpid()
         self._flush_pending = False
         self._subprocess_flush_pending = False
         self._io_loop = pub_thread.io_loop
-        self._new_buffer()
+        self._buffer_lock = threading.RLock()
+        self._buffers = defaultdict(StringIO)
         self.echo = None
         self._isatty = bool(isatty)
+        self._should_watch = False
+        self._local = local()
 
         if (
             watchfd
-            and (sys.platform.startswith("linux") or sys.platform.startswith("darwin"))
-            and ("PYTEST_CURRENT_TEST" not in os.environ)
+            and (
+                (sys.platform.startswith("linux") or sys.platform.startswith("darwin"))
+                # Pytest set its own capture. Don't redirect from within pytest.
+                and ("PYTEST_CURRENT_TEST" not in os.environ)
+            )
+            # allow forcing watchfd (mainly for tests)
+            or watchfd == "force"
         ):
-            # Pytest set its own capture. Dont redirect from within pytest.
-
             self._should_watch = True
             self._setup_stream_redirects(name)
 
         if echo:
-            if hasattr(echo, 'read') and hasattr(echo, 'write'):
+            if hasattr(echo, "read") and hasattr(echo, "write"):
+                # make sure we aren't trying to echo on the FD we're watching!
+                # that would cause an infinite loop, always echoing on itself
+                if self._should_watch:
+                    try:
+                        echo_fd = echo.fileno()
+                    except Exception:
+                        echo_fd = None
+
+                    if echo_fd is not None and echo_fd == self._original_stdstream_fd:
+                        # echo on the _copy_ we made during
+                        # this is the actual terminal FD now
+                        echo = io.TextIOWrapper(
+                            io.FileIO(
+                                self._original_stdstream_copy,
+                                "w",
+                            )
+                        )
                 self.echo = echo
             else:
-                raise ValueError("echo argument must be a file like object")
+                msg = "echo argument must be a file-like object"
+                raise ValueError(msg)
+
+    @property
+    def parent_header(self):
+        try:
+            # asyncio-specific
+            return self._parent_header.get()
+        except LookupError:
+            try:
+                # thread-specific
+                identity = threading.current_thread().ident
+                # retrieve the outermost (oldest ancestor,
+                # discounting the kernel thread) thread identity
+                while identity in self._thread_to_parent:
+                    identity = self._thread_to_parent[identity]
+                # use the header of the oldest ancestor
+                return self._thread_to_parent_header[identity]
+            except KeyError:
+                # global (fallback)
+                return self._parent_header_global
+
+    @parent_header.setter
+    def parent_header(self, value):
+        self._parent_header_global = value
+        return self._parent_header.set(value)
 
     def isatty(self):
         """Return a bool indicating whether this is an 'interactive' stream.
@@ -406,7 +536,7 @@ class OutStream(TextIOBase):
 
     def _setup_stream_redirects(self, name):
         pr, pw = os.pipe()
-        fno = getattr(sys, name).fileno()
+        fno = self._original_stdstream_fd = getattr(sys, name).fileno()
         self._original_stdstream_copy = os.dup(fno)
         os.dup2(pw, fno)
 
@@ -421,12 +551,20 @@ class OutStream(TextIOBase):
         return os.getpid() == self._master_pid
 
     def set_parent(self, parent):
+        """Set the parent header."""
         self.parent_header = extract_header(parent)
 
     def close(self):
-        if sys.platform.startswith("linux") or sys.platform.startswith("darwin"):
+        """Close the stream."""
+        if self._should_watch:
             self._should_watch = False
+            # thread won't wake unless there's something to read
+            # writing something after _should_watch will not be echoed
+            os.write(self._original_stdstream_fd, b"\0")
             self.watch_fd_thread.join()
+            # restore original FDs
+            os.dup2(self._original_stdstream_copy, self._original_stdstream_fd)
+            os.close(self._original_stdstream_copy)
         if self._exc:
             etype, value, tb = self._exc
             traceback.print_exception(etype, value, tb)
@@ -448,6 +586,7 @@ class OutStream(TextIOBase):
         # add_timeout has to be handed to the io thread via event pipe
         def _schedule_in_thread():
             self._io_loop.call_later(self.flush_interval, self._flush)
+
         self.pub_thread.schedule(_schedule_in_thread)
 
     def flush(self):
@@ -455,20 +594,22 @@ class OutStream(TextIOBase):
 
         send will happen in the background thread
         """
-        if self.pub_thread and self.pub_thread.thread is not None and self.pub_thread.thread.is_alive():
+        if (
+            self.pub_thread
+            and self.pub_thread.thread is not None
+            and self.pub_thread.thread.is_alive()
+            and self.pub_thread.thread.ident != threading.current_thread().ident
+        ):
             # request flush on the background thread
             self.pub_thread.schedule(self._flush)
             # wait for flush to actually get through, if we can.
-            # waiting across threads during import can cause deadlocks
-            # so only wait if import lock is not held
-            if not import_lock_held():
-                evt = threading.Event()
-                self.pub_thread.schedule(evt.set)
-                # and give a timeout to avoid
-                if not evt.wait(self.flush_timeout):
-                    # write directly to __stderr__ instead of warning because
-                    # if this is happening sys.stderr may be the problem.
-                    print("IOStream.flush timed out", file=sys.__stderr__)
+            evt = threading.Event()
+            self.pub_thread.schedule(evt.set)
+            # and give a timeout to avoid
+            if not evt.wait(self.flush_timeout):
+                # write directly to __stderr__ instead of warning because
+                # if this is happening sys.stderr may be the problem.
+                print("IOStream.flush timed out", file=sys.__stderr__)
         else:
             self._flush()
 
@@ -486,20 +627,32 @@ class OutStream(TextIOBase):
                 self.echo.flush()
             except OSError as e:
                 if self.echo is not sys.__stderr__:
-                    print(f"Flush failed: {e}",
-                          file=sys.__stderr__)
+                    print(f"Flush failed: {e}", file=sys.__stderr__)
 
-        data = self._flush_buffer()
-        if data:
-            # FIXME: this disables Session's fork-safe check,
-            # since pub_thread is itself fork-safe.
-            # There should be a better way to do this.
-            self.session.pid = os.getpid()
-            content = {'name':self.name, 'text':data}
-            self.session.send(self.pub_thread, 'stream', content=content,
-                parent=self.parent_header, ident=self.topic)
+        for parent, data in self._flush_buffers():
+            if data:
+                # FIXME: this disables Session's fork-safe check,
+                # since pub_thread is itself fork-safe.
+                # There should be a better way to do this.
+                self.session.pid = os.getpid()
+                content = {"name": self.name, "text": data}
+                msg = self.session.msg("stream", content, parent=parent)
 
-    def write(self, string: str) -> int:
+                # Each transform either returns a new
+                # message or None. If None is returned,
+                # the message has been 'used' and we return.
+                for hook in self._hooks:
+                    msg = hook(msg)
+                    if msg is None:
+                        return
+
+                self.session.send(
+                    self.pub_thread,
+                    msg,
+                    ident=self.topic,
+                )
+
+    def write(self, string: str) -> Optional[int]:  # type:ignore[override]
         """Write to current stream after encoding if necessary
 
         Returns
@@ -508,62 +661,109 @@ class OutStream(TextIOBase):
             number of items from input parameter written to stream.
 
         """
+        parent = self.parent_header
 
         if not isinstance(string, str):
-            raise TypeError(
-                f"write() argument must be str, not {type(string)}"
-            )
+            msg = f"write() argument must be str, not {type(string)}"  # type:ignore[unreachable]
+            raise TypeError(msg)
 
         if self.echo is not None:
             try:
                 self.echo.write(string)
             except OSError as e:
                 if self.echo is not sys.__stderr__:
-                    print(f"Write failed: {e}",
-                          file=sys.__stderr__)
+                    print(f"Write failed: {e}", file=sys.__stderr__)
 
         if self.pub_thread is None:
-            raise ValueError('I/O operation on closed file')
-        else:
+            msg = "I/O operation on closed file"
+            raise ValueError(msg)
 
-            is_child = (not self._is_master_process())
-            # only touch the buffer in the IO thread to avoid races
-            self.pub_thread.schedule(lambda: self._buffer.write(string))
-            if is_child:
-                # mp.Pool cannot be trusted to flush promptly (or ever),
-                # and this helps.
-                if self._subprocess_flush_pending:
-                    return
-                self._subprocess_flush_pending = True
-                # We can not rely on self._io_loop.call_later from a subprocess
-                self.pub_thread.schedule(self._flush)
-            else:
-                self._schedule_flush()
+        is_child = not self._is_master_process()
+        # only touch the buffer in the IO thread to avoid races
+        with self._buffer_lock:
+            self._buffers[frozenset(parent.items())].write(string)
+        if is_child:
+            # mp.Pool cannot be trusted to flush promptly (or ever),
+            # and this helps.
+            if self._subprocess_flush_pending:
+                return None
+            self._subprocess_flush_pending = True
+            # We can not rely on self._io_loop.call_later from a subprocess
+            self.pub_thread.schedule(self._flush)
+        else:
+            self._schedule_flush()
 
         return len(string)
 
     def writelines(self, sequence):
+        """Write lines to the stream."""
         if self.pub_thread is None:
-            raise ValueError('I/O operation on closed file')
-        else:
-            for string in sequence:
-                self.write(string)
+            msg = "I/O operation on closed file"
+            raise ValueError(msg)
+        for string in sequence:
+            self.write(string)
 
     def writable(self):
+        """Test whether the stream is writable."""
         return True
 
-    def _flush_buffer(self):
-        """clear the current buffer and return the current buffer data.
+    def _flush_buffers(self):
+        """clear the current buffer and return the current buffer data."""
+        buffers = self._rotate_buffers()
+        for frozen_parent, buffer in buffers.items():
+            data = buffer.getvalue()
+            buffer.close()
+            yield dict(frozen_parent), data
 
-        This should only be called in the IO thread.
+    def _rotate_buffers(self):
+        """Returns the current buffer and replaces it with an empty buffer."""
+        with self._buffer_lock:
+            old_buffers = self._buffers
+            self._buffers = defaultdict(StringIO)
+        return old_buffers
+
+    @property
+    def _hooks(self):
+        if not hasattr(self._local, "hooks"):
+            # create new list for a new thread
+            self._local.hooks = []
+        return self._local.hooks
+
+    def register_hook(self, hook):
         """
-        data = ''
-        if self._buffer is not None:
-            buf = self._buffer
-            self._new_buffer()
-            data = buf.getvalue()
-            buf.close()
-        return data
+        Registers a hook with the thread-local storage.
 
-    def _new_buffer(self):
-        self._buffer = StringIO()
+        Parameters
+        ----------
+        hook : Any callable object
+
+        Returns
+        -------
+        Either a publishable message, or `None`.
+        The hook callable must return a message from
+        the __call__ method if they still require the
+        `session.send` method to be called after transformation.
+        Returning `None` will halt that execution path, and
+        session.send will not be called.
+        """
+        self._hooks.append(hook)
+
+    def unregister_hook(self, hook):
+        """
+        Un-registers a hook with the thread-local storage.
+
+        Parameters
+        ----------
+        hook : Any callable object which has previously been
+            registered as a hook.
+
+        Returns
+        -------
+        bool - `True` if the hook was removed, `False` if it wasn't
+            found.
+        """
+        try:
+            self._hooks.remove(hook)
+            return True
+        except ValueError:
+            return False

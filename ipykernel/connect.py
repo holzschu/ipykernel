@@ -2,17 +2,21 @@
 """
 # Copyright (c) IPython Development Team.
 # Distributed under the terms of the Modified BSD License.
+from __future__ import annotations
 
 import json
 import sys
-from subprocess import Popen, PIPE
+from subprocess import PIPE, Popen
+from typing import TYPE_CHECKING, Any
 
 import jupyter_client
 from jupyter_client import write_connection_file
 
+if TYPE_CHECKING:
+    from ipykernel.kernelapp import IPKernelApp
 
 
-def get_connection_file(app=None):
+def get_connection_file(app: IPKernelApp | None = None) -> str:
     """Return the path to the connection file of an app
 
     Parameters
@@ -21,13 +25,16 @@ def get_connection_file(app=None):
         If unspecified, the currently running app will be used
     """
     from traitlets.utils import filefind
+
     if app is None:
         from ipykernel.kernelapp import IPKernelApp
+
         if not IPKernelApp.initialized():
-            raise RuntimeError("app not specified, and not in a running Kernel")
+            msg = "app not specified, and not in a running Kernel"
+            raise RuntimeError(msg)
 
         app = IPKernelApp.instance()
-    return filefind(app.connection_file, ['.', app.connection_dir])
+    return filefind(app.connection_file, [".", app.connection_dir])
 
 
 def _find_connection_file(connection_file):
@@ -39,11 +46,12 @@ def _find_connection_file(connection_file):
     if connection_file is None:
         # get connection file from current kernel
         return get_connection_file()
-    else:
-        return jupyter_client.find_connection_file(connection_file)
+    return jupyter_client.find_connection_file(connection_file)
 
 
-def get_connection_info(connection_file=None, unpack=False):
+def get_connection_info(
+    connection_file: str | None = None, unpack: bool = False
+) -> str | dict[str, Any]:
     """Return the connection information for the current Kernel.
 
     Parameters
@@ -55,6 +63,7 @@ def get_connection_info(connection_file=None, unpack=False):
 
         If unspecified, the connection file for the currently running
         IPython Kernel will be used, which is only allowed from inside a kernel.
+
     unpack : bool [default: False]
         if True, return the unpacked dict, otherwise just the string contents
         of the file.
@@ -67,16 +76,20 @@ def get_connection_info(connection_file=None, unpack=False):
     cf = _find_connection_file(connection_file)
 
     with open(cf) as f:
-        info = f.read()
+        info_str = f.read()
 
     if unpack:
-        info = json.loads(info)
+        info = json.loads(info_str)
         # ensure key is bytes:
         info["key"] = info.get("key", "").encode()
-    return info
+        return info  # type:ignore[no-any-return]
+
+    return info_str
 
 
-def connect_qtconsole(connection_file=None, argv=None):
+def connect_qtconsole(
+    connection_file: str | None = None, argv: list[str] | None = None
+) -> Popen[Any]:
     """Connect a qtconsole to the current kernel.
 
     This is useful for connecting a second qtconsole to a kernel, or to a
@@ -91,6 +104,7 @@ def connect_qtconsole(connection_file=None, argv=None):
 
         If unspecified, the connection file for the currently running
         IPython Kernel will be used, which is only allowed from inside a kernel.
+
     argv : list [optional]
         Any extra args to be passed to the console.
 
@@ -102,25 +116,25 @@ def connect_qtconsole(connection_file=None, argv=None):
 
     cf = _find_connection_file(connection_file)
 
-    cmd = ';'.join([
-        "from IPython.qt.console import qtconsoleapp",
-        "qtconsoleapp.main()"
-    ])
+    cmd = ";".join(["from qtconsole import qtconsoleapp", "qtconsoleapp.main()"])
 
-    kwargs = {}
+    kwargs: dict[str, Any] = {}
     # Launch the Qt console in a separate session & process group, so
     # interrupting the kernel doesn't kill it.
-    kwargs['start_new_session'] = True
+    kwargs["start_new_session"] = True
 
-    return Popen([sys.executable, '-c', cmd, '--existing', cf] + argv,
-        stdout=PIPE, stderr=PIPE, close_fds=(sys.platform != 'win32'),
-        **kwargs
+    return Popen(
+        [sys.executable, "-c", cmd, "--existing", cf, *argv],
+        stdout=PIPE,
+        stderr=PIPE,
+        close_fds=(sys.platform != "win32"),
+        **kwargs,
     )
 
 
 __all__ = [
-    'write_connection_file',
-    'get_connection_file',
-    'get_connection_info',
-    'connect_qtconsole',
+    "write_connection_file",
+    "get_connection_file",
+    "get_connection_info",
+    "connect_qtconsole",
 ]
