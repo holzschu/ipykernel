@@ -5,17 +5,26 @@
 
 import asyncio
 import concurrent.futures
-from datetime import datetime
-from functools import partial
+import inspect
 import itertools
 import logging
-import inspect
 import os
-from signal import signal, default_int_handler, SIGINT
+import socket
 import sys
 import time
 import uuid
 import warnings
+from datetime import datetime
+from functools import partial
+from signal import SIGINT, SIGTERM, Signals, default_int_handler, signal
+
+if sys.platform != "win32":
+    from signal import SIGKILL
+else:
+    SIGKILL = "windown-SIGKILL-sentinel"
+
+
+
 
 try:
     # jupyter_client >= 5, use tz-aware now
@@ -24,20 +33,18 @@ except ImportError:
     # jupyter_client < 5, use local now()
     now = datetime.now
 
-from tornado import ioloop
-from tornado.queues import Queue
+import psutil
 import zmq
+from IPython.core.error import StdinNotImplementedError
+from jupyter_client.session import Session
+from tornado import ioloop
+from tornado.queues import Queue, QueueEmpty
+from traitlets import (Any, Bool, Dict, Float, Instance, Integer, List, Set,
+                       Unicode, default, observe)
+from traitlets.config.configurable import SingletonConfigurable
 from zmq.eventloop.zmqstream import ZMQStream
 
-from traitlets.config.configurable import SingletonConfigurable
-from IPython.core.error import StdinNotImplementedError
 from ipykernel.jsonutil import json_clean
-from traitlets import (
-    Any, Instance, Float, Dict, List, Set, Integer, Unicode, Bool,
-    observe, default
-)
-
-from jupyter_client.session import Session
 
 from ._version import kernel_protocol_version
 
@@ -123,6 +130,15 @@ class Kernel(SingletonConfigurable):
     # any links that should go in the help menu
     help_links = List()
 
+    # Experimental option to break in non-user code.
+    # The ipykernel source is in the call stack, so the user
+    # has to manipulate the step-over and step-into in a wize way.
+    debug_just_my_code = Bool(True,
+        help="""Set to False if you want to debug python standard and dependent libraries.
+        """
+    ).tag(config=True)
+
+    # track associations with current request
     # Private interface
 
     _darwin_app_nap = Bool(True,
@@ -204,10 +220,10 @@ class Kernel(SingletonConfigurable):
         'apply_request',
     ]
     # add deprecated ipyparallel control messages
-    control_msg_types = msg_types + ['clear_request', 'abort_request', 'debug_request']
+    control_msg_types = msg_types + ['clear_request', 'abort_request', 'debug_request', 'usage_request']
 
     def __init__(self, **kwargs):
-        super(Kernel, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         # Build dict of handlers for message types
         self.shell_handlers = {}
         for msg_type in self.msg_types:
@@ -441,7 +457,7 @@ class Kernel(SingletonConfigurable):
         else:
             try:
                 t, dispatch, args = self.msg_queue.get_nowait()
-            except asyncio.QueueEmpty:
+            except (asyncio.QueueEmpty, QueueEmpty):
                 return None
         await dispatch(*args)
 
@@ -667,7 +683,7 @@ class Kernel(SingletonConfigurable):
         self.log.debug("%s", reply_msg)
 
         if not silent and reply_msg['content']['status'] == 'error' and stop_on_error:
-            await self._abort_queues()
+            self._abort_queues()
 
     def do_execute(self, code, silent, store_history=True,
                    user_expressions=None, allow_stdin=False):
@@ -702,6 +718,7 @@ class Kernel(SingletonConfigurable):
         reply_content = self.do_inspect(
             content['code'], content['cursor_pos'],
             content.get('detail_level', 0),
+            set(content.get('omit_sections', [])),
         )
         if inspect.isawaitable(reply_content):
             reply_content = await reply_content
@@ -712,7 +729,7 @@ class Kernel(SingletonConfigurable):
                                 reply_content, parent, ident)
         self.log.debug("%s", msg)
 
-    def do_inspect(self, code, cursor_pos, detail_level=0):
+    def do_inspect(self, code, cursor_pos, detail_level=0, omit_sections=()):
         """Override in subclasses to allow introspection.
         """
         return {'status': 'ok', 'data': {}, 'metadata': {}, 'found': False}
@@ -781,16 +798,15 @@ class Kernel(SingletonConfigurable):
                                 reply_content, parent, ident)
         self.log.debug("%s", msg)
 
-    async def interrupt_request(self, stream, ident, parent):
-        pid = os.getpid()
-        pgid = os.getpgid(pid)
-
+    def _send_interupt_children(self):
         if os.name == "nt":
             self.log.error("Interrupt message not supported on Windows")
-
         else:
+            pid = os.getpid()
+            pgid = os.getpgid(pid)
             # Prefer process-group over process
-            if pgid and hasattr(os, "killpg"):
+            # but only if the kernel is the leader of the process group
+            if pgid and pgid == pid and hasattr(os, "killpg"):
                 try:
                     os.killpg(pgid, SIGINT)
                     return
@@ -801,6 +817,8 @@ class Kernel(SingletonConfigurable):
             except OSError:
                 pass
 
+    async def interrupt_request(self, stream, ident, parent):
+        self._send_interupt_children()
         content = parent['content']
         self.session.send(stream, 'interrupt_reply', content, parent, ident=ident)
         return
@@ -815,7 +833,7 @@ class Kernel(SingletonConfigurable):
                                                   content, parent
         )
 
-        self._at_shutdown()
+        await self._at_shutdown()
 
         self.log.debug('Stopping control ioloop')
         control_io_loop = self.control_stream.io_loop
@@ -856,6 +874,39 @@ class Kernel(SingletonConfigurable):
             reply_content = await reply_content
         reply_content = json_clean(reply_content)
         reply_msg = self.session.send(stream, 'debug_reply', reply_content,
+                                      parent, ident)
+        self.log.debug("%s", reply_msg)
+
+    # Taken from https://github.com/jupyter-server/jupyter-resource-usage/blob/e6ec53fa69fdb6de8e878974bcff006310658408/jupyter_resource_usage/metrics.py#L16
+    def get_process_metric_value(self, process, name, attribute=None):
+        try:
+            # psutil.Process methods will either return...
+            metric_value = getattr(process, name)()
+            if attribute is not None:  # ... a named tuple
+                return getattr(metric_value, attribute)
+            else:  # ... or a number
+                return metric_value
+        # Avoid littering logs with stack traces
+        # complaining about dead processes
+        except BaseException:
+            return None
+
+    async def usage_request(self, stream, ident, parent):
+        reply_content = {
+            'hostname': socket.gethostname()
+        }
+        current_process = psutil.Process()
+        all_processes = [current_process] + current_process.children(recursive=True)
+        process_metric_value = self.get_process_metric_value
+        reply_content['kernel_cpu'] = sum([process_metric_value(process, 'cpu_percent', None) for process in all_processes])
+        reply_content['kernel_memory'] = sum([process_metric_value(process, 'memory_info', 'rss') for process in all_processes])
+        cpu_percent = psutil.cpu_percent()
+        # https://psutil.readthedocs.io/en/latest/index.html?highlight=cpu#psutil.cpu_percent
+        # The first time cpu_percent is called it will return a meaningless 0.0 value which you are supposed to ignore.
+        if cpu_percent != None and cpu_percent != 0.0:
+            reply_content['host_cpu_percent'] = cpu_percent
+        reply_content['host_virtual_memory'] = dict(psutil.virtual_memory()._asdict())
+        reply_msg = self.session.send(stream, 'usage_reply', reply_content,
                                       parent, ident)
         self.log.debug("%s", reply_msg)
 
@@ -936,13 +987,32 @@ class Kernel(SingletonConfigurable):
 
     _aborting = Bool(False)
 
-    async def _abort_queues(self):
-        self.shell_stream.flush()
+    def _abort_queues(self):
+        # while this flag is true,
+        # execute requests will be aborted
         self._aborting = True
-        def stop_aborting():
+        self.log.info("Aborting queue")
+
+        # flush streams, so all currently waiting messages
+        # are added to the queue
+        self.shell_stream.flush()
+
+        # Callback to signal that we are done aborting
+        # dispatch functions _must_ be async
+        async def stop_aborting():
             self.log.info("Finishing abort")
             self._aborting = False
-        asyncio.get_event_loop().call_later(self.stop_on_error_timeout, stop_aborting)
+
+        # put the stop-aborting event on the message queue
+        # so that all messages already waiting in the queue are aborted
+        # before we reset the flag
+        schedule_stop_aborting = partial(self.schedule_dispatch, stop_aborting)
+
+        # if we have a delay, give messages this long to arrive on the queue
+        # before we stop aborting requests
+        asyncio.get_event_loop().call_later(
+            self.stop_on_error_timeout, schedule_stop_aborting
+        )
 
     def _send_abort_reply(self, stream, msg, idents):
         """Send a reply to an aborted request"""
@@ -1062,10 +1132,81 @@ class Kernel(SingletonConfigurable):
             raise EOFError
         return value
 
-    def _at_shutdown(self):
+    def _signal_children(self, signum):
+        """
+        Send a signal to all our children
+
+        Like `killpg`, but does not include the current process
+        (or possible parents).
+        """
+        for p in self._process_children():
+            self.log.debug(f"Sending {Signals(signum)!r} to subprocess {p}")
+            try:
+                if signum == SIGTERM:
+                    p.terminate()
+                elif signum == SIGKILL:
+                    p.kill()
+                else:
+                    p.send_signal(signum)
+            except psutil.NoSuchProcess:
+                pass
+
+    def _process_children(self):
+        """Retrieve child processes in the kernel's process group
+
+        Avoids:
+        - including parents and self with killpg
+        - including all children that may have forked-off a new group
+        """
+        kernel_process = psutil.Process()
+        all_children = kernel_process.children(recursive=True)
+        if os.name == "nt":
+            return all_children
+        kernel_pgid = os.getpgrp()
+        process_group_children = []
+        for child in all_children:
+            try:
+                child_pgid = os.getpgid(child.pid)
+            except OSError:
+                pass
+            else:
+                if child_pgid == kernel_pgid:
+                    process_group_children.append(child)
+        return process_group_children
+
+    async def _progressively_terminate_all_children(self):
+        sleeps = (0.01, 0.03, 0.1, 0.3, 1, 3, 10)
+        if not self._process_children():
+            self.log.debug("Kernel has no children.")
+            return
+
+        for signum in (SIGTERM, SIGKILL):
+            for delay in sleeps:
+                children = self._process_children()
+                if not children:
+                    self.log.debug("No more children, continuing shutdown routine.")
+                    return
+                # signals only children, not current process
+                self._signal_children(signum)
+                self.log.debug(
+                    f"Will sleep {delay}s before checking for children and retrying. {children}"
+                )
+                await asyncio.sleep(delay)
+
+    async def _at_shutdown(self):
         """Actions taken at shutdown by the kernel, called by python's atexit.
         """
-        if self._shutdown_message is not None:
-            self.session.send(self.iopub_socket, self._shutdown_message, ident=self._topic('shutdown'))
-            self.log.debug("%s", self._shutdown_message)
-        self.control_stream.flush(zmq.POLLOUT)
+        try:
+            await self._progressively_terminate_all_children()
+        except Exception as e:
+            self.log.exception("Exception during subprocesses termination %s", e)
+
+        finally:
+            if self._shutdown_message is not None:
+                self.session.send(
+                    self.iopub_socket,
+                    self._shutdown_message,
+                    ident=self._topic("shutdown"),
+                )
+                self.log.debug("%s", self._shutdown_message)
+            self.control_stream.flush(zmq.POLLOUT)

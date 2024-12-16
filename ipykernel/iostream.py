@@ -39,7 +39,7 @@ CHILD = 1
 #-----------------------------------------------------------------------------
 
 
-class IOPubThread(object):
+class IOPubThread:
     """An object for sending IOPub messages in a background thread
 
     Prevents a blocking main thread from delaying output from threads.
@@ -70,10 +70,11 @@ class IOPubThread(object):
         self._events = deque()
         self._event_pipes = WeakSet()
         self._setup_event_pipe()
-        self.thread = threading.Thread(target=self._thread_main)
+        self.thread = threading.Thread(target=self._thread_main, name="IOPub")
         self.thread.daemon = True
         self.thread.pydev_do_not_trace = True
         self.thread.is_pydev_daemon_thread = True
+        self.thread.name = "IOPub"
 
     def _thread_main(self):
         """The inner loop that's actually run in a thread"""
@@ -176,6 +177,7 @@ class IOPubThread(object):
 
     def start(self):
         """Start the IOPub thread"""
+        self.thread.name = "IOPub"
         self.thread.start()
         # make sure we don't prevent process exit
         # I'm not sure why setting daemon=True above isn't enough, but it doesn't appear to be.
@@ -239,7 +241,7 @@ class IOPubThread(object):
             ctx.term()
 
 
-class BackgroundSocket(object):
+class BackgroundSocket:
     """Wrapper around IOPub thread that provides zmq send[_multipart]"""
     io_thread = None
 
@@ -250,26 +252,26 @@ class BackgroundSocket(object):
         """Wrap socket attr access for backward-compatibility"""
         if attr.startswith('__') and attr.endswith('__'):
             # don't wrap magic methods
-            super(BackgroundSocket, self).__getattr__(attr)
+            super().__getattr__(attr)
         if hasattr(self.io_thread.socket, attr):
             warnings.warn(
-                "Accessing zmq Socket attribute {attr} on BackgroundSocket"
-                " is deprecated since ipykernel 4.3.0"
-                " use .io_thread.socket.{attr}".format(attr=attr),
+                f"Accessing zmq Socket attribute {attr} on BackgroundSocket"
+                f" is deprecated since ipykernel 4.3.0"
+                f" use .io_thread.socket.{attr}",
                 DeprecationWarning,
                 stacklevel=2,
             )
             return getattr(self.io_thread.socket, attr)
-        super(BackgroundSocket, self).__getattr__(attr)
+        super().__getattr__(attr)
 
     def __setattr__(self, attr, value):
         if attr == 'io_thread' or (attr.startswith('__' and attr.endswith('__'))):
-            super(BackgroundSocket, self).__setattr__(attr, value)
+            super().__setattr__(attr, value)
         else:
             warnings.warn(
-                "Setting zmq Socket attribute {attr} on BackgroundSocket"
-                " is deprecated since ipykernel 4.3.0"
-                " use .io_thread.socket.{attr}".format(attr=attr),
+                f"Setting zmq Socket attribute {attr} on BackgroundSocket"
+                f" is deprecated since ipykernel 4.3.0"
+                f" use .io_thread.socket.{attr}",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -484,7 +486,7 @@ class OutStream(TextIOBase):
                 self.echo.flush()
             except OSError as e:
                 if self.echo is not sys.__stderr__:
-                    print("Flush failed: {}".format(e),
+                    print(f"Flush failed: {e}",
                           file=sys.__stderr__)
 
         data = self._flush_buffer()
@@ -517,7 +519,7 @@ class OutStream(TextIOBase):
                 self.echo.write(string)
             except OSError as e:
                 if self.echo is not sys.__stderr__:
-                    print("Write failed: {}".format(e),
+                    print(f"Write failed: {e}",
                           file=sys.__stderr__)
 
         if self.pub_thread is None:

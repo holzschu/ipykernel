@@ -1,5 +1,7 @@
+import sys
 import os
 import re
+import threading
 
 import zmq
 from zmq.utils import jsonapi
@@ -8,6 +10,7 @@ from tornado.queues import Queue
 from tornado.locks import Event
 
 from IPython.core.getipython import get_ipython
+from IPython.core.inputtransformer2 import leading_empty_lines
 
 try:
     from jupyter_client.jsonutil import json_default
@@ -16,10 +19,14 @@ except ImportError:
 
 from .compiler import (get_file_name, get_tmp_directory, get_tmp_hash_seed)
 
-# This import is required to have the next ones working...
-from debugpy.server import api  # noqa
-from _pydevd_bundle import pydevd_frame_utils
-from _pydevd_bundle.pydevd_suspended_frames import SuspendedFramesManager, _FramesTracker
+try:
+    # This import is required to have the next ones working...
+    from debugpy.server import api  # noqa
+    from _pydevd_bundle import pydevd_frame_utils
+    from _pydevd_bundle.pydevd_suspended_frames import SuspendedFramesManager, _FramesTracker
+    _is_debugpy_available = True
+except ImportError:
+    _is_debugpy_available = False
 
 # Required for backwards compatiblity
 ROUTING_ID = getattr(zmq, 'ROUTING_ID', None) or zmq.IDENTITY
@@ -263,16 +270,19 @@ class Debugger:
 
     # Requests that can be handled even if the debugger is not running
     static_debug_msg_types = [
-        'debugInfo', 'inspectVariables', 'richInspectVariables'
+        'debugInfo', 'inspectVariables', 
+        'richInspectVariables', 'modules'
     ]
 
-    def __init__(self, log, debugpy_stream, event_callback, shell_socket, session):
+    def __init__(self, log, debugpy_stream, event_callback, shell_socket, session, just_my_code = True):
         self.log = log
         self.debugpy_client = DebugpyClient(log, debugpy_stream, self._handle_event)
         self.shell_socket = shell_socket
         self.session = session
         self.is_started = False
         self.event_callback = event_callback
+        self.just_my_code = just_my_code
+        self.stopped_queue = Queue()
 
         self.started_debug_handlers = {}
         for msg_type in Debugger.started_debug_msg_types:
@@ -283,9 +293,10 @@ class Debugger:
             self.static_debug_handlers[msg_type] = getattr(self, msg_type)
 
         self.breakpoint_list = {}
-        self.stopped_threads = []
+        self.stopped_threads = set()
 
         self.debugpy_initialized = False
+        self._removed_cleanup = {}
 
         self.debugpy_host = '127.0.0.1'
         self.debugpy_port = 0
@@ -295,13 +306,21 @@ class Debugger:
 
     def _handle_event(self, msg):
         if msg['event'] == 'stopped':
-            self.stopped_threads.append(msg['body']['threadId'])
+            if msg['body']['allThreadsStopped']:
+                self.stopped_queue.put_nowait(msg)
+                # Do not forward the event now, will be done in the handle_stopped_event
+                return
+            else:
+                self.stopped_threads.add(msg['body']['threadId'])
+                self.event_callback(msg)
         elif msg['event'] == 'continued':
-            try:
+            if msg['body']['allThreadsContinued']:
+                self.stopped_threads = set()
+            else:
                 self.stopped_threads.remove(msg['body']['threadId'])
-            except Exception:
-                pass
-        self.event_callback(msg)
+            self.event_callback(msg)
+        else:
+            self.event_callback(msg)
 
     async def _forward_message(self, msg):
         return await self.debugpy_client.send_dap_request(msg)
@@ -319,6 +338,32 @@ class Debugger:
             }
         }
         return reply
+
+    def _accept_stopped_thread(self, thread_name):
+        # TODO: identify Thread-2, Thread-3 and Thread-4. These are NOT
+        # Control, IOPub or Heartbeat threads
+        forbid_list = [
+            'IPythonHistorySavingThread',
+            'Thread-2',
+            'Thread-3',
+            'Thread-4'
+        ]
+        return thread_name not in forbid_list
+        
+    async def handle_stopped_event(self):
+        # Wait for a stopped event message in the stopped queue
+        # This message is used for triggering the 'threads' request
+        event = await self.stopped_queue.get()
+        req = {
+            'seq': event['seq'] + 1,
+            'type': 'request',
+            'command': 'threads'
+        }
+        rep = await self._forward_message(req)
+        for t in rep['body']['threads']:
+            if self._accept_stopped_thread(t['name']):
+                self.stopped_threads.add(t['id'])
+        self.event_callback(event)
 
     @property
     def tcp_client(self):
@@ -341,17 +386,30 @@ class Debugger:
 
             ident, msg = self.session.recv(self.shell_socket, mode=0)
             self.debugpy_initialized = msg['content']['status'] == 'ok'
+
+        # Don't remove leading empty lines when debugging so the breakpoints are correctly positioned
+        cleanup_transforms = get_ipython().input_transformer_manager.cleanup_transforms
+        if leading_empty_lines in cleanup_transforms:
+            index = cleanup_transforms.index(leading_empty_lines)
+            self._removed_cleanup[index] = cleanup_transforms.pop(index)
+
         self.debugpy_client.connect_tcp_socket()
         return self.debugpy_initialized
 
     def stop(self):
         self.debugpy_client.disconnect_tcp_socket()
 
+        # Restore remove cleanup transformers
+        cleanup_transforms = get_ipython().input_transformer_manager.cleanup_transforms
+        for index in sorted(self._removed_cleanup):
+            func = self._removed_cleanup.pop(index)
+            cleanup_transforms.insert(index, func)
+
     async def dumpCell(self, message):
         code = message['arguments']['code']
         file_name = get_file_name(code)
 
-        with open(file_name, 'w') as f:
+        with open(file_name, 'w', encoding='utf-8') as f:
             f.write(code)
 
         reply = {
@@ -378,7 +436,7 @@ class Debugger:
         }
         source_path = message["arguments"]["source"]["path"]
         if os.path.isfile(source_path):
-            with open(source_path) as f:
+            with open(source_path, encoding='utf-8') as f:
                 reply['success'] = True
                 reply['body'] = {
                     'content': f.read()
@@ -462,6 +520,12 @@ class Debugger:
             'port': port
         }
         message['arguments']['logToFile'] = True
+        # Experimental option to break in non-user code.
+        # The ipykernel source is in the call stack, so the user
+        # has to manipulate the step-over and step-into in a wize way.
+        # Set debugOptions for breakpoints in python standard library source.
+        if not self.just_my_code:
+            message['arguments']['debugOptions'] = [ 'DebugStdLib' ]
         return await self._forward_message(message)
 
     async def configurationDone(self, message):
@@ -490,11 +554,12 @@ class Debugger:
                 'isStarted': self.is_started,
                 'hashMethod': 'Murmur2',
                 'hashSeed': get_tmp_hash_seed(),
-                'tmpFilePrefix': get_tmp_directory() + '/',
+                'tmpFilePrefix': get_tmp_directory() + os.sep,
                 'tmpFileSuffix': '.py',
                 'breakpoints': breakpoint_list,
-                'stoppedThreads': self.stopped_threads,
-                'richRendering': True
+                'stoppedThreads': list(self.stopped_threads),
+                'richRendering': True,
+                'exceptionPaths': ['Python Exceptions']
             }
         }
         return reply
@@ -537,7 +602,7 @@ class Debugger:
         else:
             # The code has stopped on a breakpoint, we use the setExpression
             # request to get the rich representation of the variable
-            code = "get_ipython().display_formatter.format(" + var_name + ")"
+            code = f"get_ipython().display_formatter.format({var_name})"
             frame_id = message["arguments"]["frameId"]
             seq = message["seq"]
             reply = await self._forward_message(
@@ -558,6 +623,24 @@ class Debugger:
 
         reply["body"] = body
         reply["success"] = True
+        return reply
+
+    async def modules(self, message):
+        modules = list(sys.modules.values())
+        startModule = message.get('startModule', 0)
+        moduleCount = message.get('moduleCount', len(modules))
+        mods = []
+        for i in range(startModule, moduleCount):
+            module = modules[i]
+            filename = getattr(getattr(module, '__spec__', None), 'origin', None)
+            if filename and filename.endswith('.py'):
+                mods.append({
+                    'id': i,
+                    'name': module.__name__,
+                    'path': filename
+                })
+
+        reply = {'body': {'modules': mods, 'totalModules': len(modules)}}
         return reply
 
     async def process_request(self, message):
@@ -592,7 +675,7 @@ class Debugger:
         if message['command'] == 'disconnect':
             self.stop()
             self.breakpoint_list = {}
-            self.stopped_threads = []
+            self.stopped_threads = set()
             self.is_started = False
             self.log.info('The debugger has stopped')
 

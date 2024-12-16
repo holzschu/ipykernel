@@ -18,6 +18,12 @@ from .kernelbase import Kernel as KernelBase
 from .zmqshell import ZMQInteractiveShell
 from .eventloops import _use_appnope
 from .compiler import XCachingCompiler
+# iOS: debugpy is not going to work with iOS restrictions
+if not (sys.platform == "ios"):
+    from .debugger import Debugger, _is_debugpy_available
+else:
+    _is_debugpy_available = False
+
 
 try:
     from IPython.core.interactiveshell import _asyncio_runner
@@ -32,18 +38,6 @@ try:
     _use_experimental_60_completion = True
 except ImportError:
     _use_experimental_60_completion = False
-
-# iOS: debugpy is not going to work with iOS restrictions
-import os
-if not (sys.platform == "darwin" and os.uname().machine.startswith("iP")):
-    try:
-        import debugpy
-        from .debugger import Debugger
-        _is_debugpy_available = True
-    except ImportError:
-        _is_debugpy_available = False
-else:
-    _is_debugpy_available = False
 
 _EXPERIMENTAL_KEY_NAME = '_jupyter_types_experimental'
 
@@ -80,7 +74,7 @@ class IPythonKernel(KernelBase):
     _sys_eval_input = Any()
 
     def __init__(self, **kwargs):
-        super(IPythonKernel, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         # Initialize the Debugger
         if _is_debugpy_available:
@@ -88,7 +82,8 @@ class IPythonKernel(KernelBase):
                                     self.debugpy_stream,
                                     self._publish_debug_event,
                                     self.debug_shell_socket,
-                                    self.session)
+                                    self.session,
+                                    self.debug_just_my_code)
 
         # Initialize the InteractiveShell subclass
         self.shell = self.shell_class.instance(parent=self,
@@ -174,19 +169,25 @@ class IPythonKernel(KernelBase):
     def banner(self):
         return self.shell.banner
 
+    async def poll_stopped_queue(self):
+        while True:
+            await self.debugger.handle_stopped_event()
+
     def start(self):
         self.shell.exit_now = False
         if self.debugpy_stream is None:
             self.log.warning("debugpy_stream undefined, debugging will not be enabled")
         else:
             self.debugpy_stream.on_recv(self.dispatch_debugpy, copy=False)
-        super(IPythonKernel, self).start()
+        super().start()
+        if self.debugpy_stream:
+            asyncio.run_coroutine_threadsafe(self.poll_stopped_queue(), self.control_thread.io_loop.asyncio_loop)
 
     def set_parent(self, ident, parent, channel='shell'):
         """Overridden from parent to tell the display hook and output streams
         about the parent message.
         """
-        super(IPythonKernel, self).set_parent(ident, parent, channel)
+        super().set_parent(ident, parent, channel)
         if channel == 'shell':
             self.shell.set_parent(parent)
 
@@ -195,7 +196,7 @@ class IPythonKernel(KernelBase):
 
         Run at the beginning of each execution request.
         """
-        md = super(IPythonKernel, self).init_metadata(parent)
+        md = super().init_metadata(parent)
         # FIXME: remove deprecated ipyparallel-specific code
         # This is required for ipyparallel < 5.0
         md.update({
@@ -464,19 +465,27 @@ class IPythonKernel(KernelBase):
                 'metadata': {_EXPERIMENTAL_KEY_NAME: comps},
                 'status': 'ok'}
 
-    def do_inspect(self, code, cursor_pos, detail_level=0):
+    def do_inspect(self, code, cursor_pos, detail_level=0, omit_sections=()):
         name = token_at_cursor(code, cursor_pos)
 
         reply_content = {'status' : 'ok'}
         reply_content['data'] = {}
         reply_content['metadata'] = {}
         try:
-            reply_content['data'].update(
-                self.shell.object_inspect_mime(
+            if release.version_info >= (8,):
+                # `omit_sections` keyword will be available in IPython 8, see
+                # https://github.com/ipython/ipython/pull/13343
+                bundle = self.shell.object_inspect_mime(
+                    name,
+                    detail_level=detail_level,
+                    omit_sections=omit_sections,
+                )
+            else:
+                bundle = self.shell.object_inspect_mime(
                     name,
                     detail_level=detail_level
                 )
-            )
+            reply_content['data'].update(bundle)
             if not self.shell.enable_html_pager:
                 reply_content['data'].pop('text/html')
             reply_content['found'] = True
@@ -588,4 +597,4 @@ class Kernel(IPythonKernel):
         import warnings
         warnings.warn('Kernel is a deprecated alias of ipykernel.ipkernel.IPythonKernel',
                       DeprecationWarning)
-        super(Kernel, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)

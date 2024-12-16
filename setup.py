@@ -61,8 +61,6 @@ setup_args = dict(
     keywords=['Interactive', 'Interpreter', 'Shell', 'Web'],
     python_requires='>=3.7',
     install_requires=[
-        'importlib-metadata<5;python_version<"3.8.0"',
-        'argcomplete>=1.12.3;python_version<"3.8.0"',
         'debugpy>=1.0.0,<2.0',
         'ipython>=7.23.1',
         'traitlets>=5.1.0,<6.0',
@@ -70,13 +68,14 @@ setup_args = dict(
         'tornado>=4.2,<7.0',
         'matplotlib-inline>=0.1.0,<0.2.0',
         'appnope;platform_system=="Darwin"',
+        'psutil',
+        'nest_asyncio',
     ],
     extras_require={
         "test": [
             "pytest !=5.3.4",
             "pytest-cov",
             "flaky",
-            "nose",  # nose because we are still using nose streams from ipython
             "ipyparallel",
         ],
     },

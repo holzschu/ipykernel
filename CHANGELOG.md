@@ -1,8 +1,175 @@
 # Changes in IPython kernel
 
-## 6.3
-
 <!-- <START NEW CHANGELOG ENTRY> -->
+
+## 6.9.2
+
+([Full Changelog](https://github.com/ipython/ipykernel/compare/v6.9.1...d6744f9e423dacc6b317b1d31805304e89cbec5d))
+
+### Bugs fixed
+
+- Catch error when shutting down kernel from the control channel [#877](https://github.com/ipython/ipykernel/pull/877) ([@ccordoba12](https://github.com/ccordoba12))
+- Only kill children in process group at shutdown [#874](https://github.com/ipython/ipykernel/pull/874) ([@minrk](https://github.com/minrk))
+- BUG: Kill subprocesses on shutdown. [#869](https://github.com/ipython/ipykernel/pull/869) ([@Carreau](https://github.com/Carreau))
+
+### Maintenance and upkeep improvements
+
+- Clean up CI [#871](https://github.com/ipython/ipykernel/pull/871) ([@blink1073](https://github.com/blink1073))
+
+### Contributors to this release
+
+([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2022-02-15&to=2022-03-14&type=c))
+
+[@blink1073](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Ablink1073+updated%3A2022-02-15..2022-03-14&type=Issues) | [@Carreau](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3ACarreau+updated%3A2022-02-15..2022-03-14&type=Issues) | [@ccordoba12](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Accordoba12+updated%3A2022-02-15..2022-03-14&type=Issues) | [@echarles](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aecharles+updated%3A2022-02-15..2022-03-14&type=Issues) | [@fabioz](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Afabioz+updated%3A2022-02-15..2022-03-14&type=Issues) | [@minrk](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aminrk+updated%3A2022-02-15..2022-03-14&type=Issues) | [@vidartf](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Avidartf+updated%3A2022-02-15..2022-03-14&type=Issues)
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
+## 6.9.1
+
+([Full Changelog](https://github.com/ipython/ipykernel/compare/v6.9.0...c27e5b95c3d104d9fb6cae3375aec0e98974dcff))
+
+### Bugs fixed
+
+- Add hostname to the usage reply [#865](https://github.com/ipython/ipykernel/pull/865) ([@echarles](https://github.com/echarles))
+- Enable standard library debugging via config [#863](https://github.com/ipython/ipykernel/pull/863) ([@echarles](https://github.com/echarles))
+- process_one only accepts coroutines for dispatch [#861](https://github.com/ipython/ipykernel/pull/861) ([@minrk](https://github.com/minrk))
+
+### Contributors to this release
+
+([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2022-02-07&to=2022-02-15&type=c))
+
+[@blink1073](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Ablink1073+updated%3A2022-02-07..2022-02-15&type=Issues) | [@echarles](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aecharles+updated%3A2022-02-07..2022-02-15&type=Issues) | [@minrk](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aminrk+updated%3A2022-02-07..2022-02-15&type=Issues)
+
+## 6.9.0
+
+([Full Changelog](https://github.com/ipython/ipykernel/compare/v6.8.0...7a229c6c83d44d315f637ef63159a43c64ec73d6))
+
+### Bugs fixed
+
+- Fixed event forwarding [#855](https://github.com/ipython/ipykernel/pull/855) ([@JohanMabille](https://github.com/JohanMabille))
+- use message queue for abort_queues [#853](https://github.com/ipython/ipykernel/pull/853) ([@minrk](https://github.com/minrk))
+
+### Contributors to this release
+
+([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2022-02-01&to=2022-02-07&type=c))
+
+[@blink1073](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Ablink1073+updated%3A2022-02-01..2022-02-07&type=Issues) | [@JohanMabille](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3AJohanMabille+updated%3A2022-02-01..2022-02-07&type=Issues) | [@minrk](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aminrk+updated%3A2022-02-01..2022-02-07&type=Issues)
+
+## 6.8.0
+
+([Full Changelog](https://github.com/ipython/ipykernel/compare/v6.7.0...4e775b70e7e1be7e96fe7c3c747f21f3d93f0181))
+
+### Enhancements made
+
+- Add support for the debug modules request [#816](https://github.com/ipython/ipykernel/pull/816) ([@echarles](https://github.com/echarles))
+
+### Bugs fixed
+
+- Handle all threads stopped correctly [#849](https://github.com/ipython/ipykernel/pull/849) ([@JohanMabille](https://github.com/JohanMabille))
+- Fix the debug modules model [#848](https://github.com/ipython/ipykernel/pull/848) ([@echarles](https://github.com/echarles))
+- Handled AllThreadsContinued and workaround for wrong threadId in cont… [#844](https://github.com/ipython/ipykernel/pull/844) ([@JohanMabille](https://github.com/JohanMabille))
+
+### Maintenance and upkeep improvements
+
+- Cancel duplicate runs [#850](https://github.com/ipython/ipykernel/pull/850) ([@blink1073](https://github.com/blink1073))
+
+### Contributors to this release
+
+([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2022-01-13&to=2022-02-01&type=c))
+
+[@blink1073](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Ablink1073+updated%3A2022-01-13..2022-02-01&type=Issues) | [@echarles](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aecharles+updated%3A2022-01-13..2022-02-01&type=Issues) | [@JohanMabille](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3AJohanMabille+updated%3A2022-01-13..2022-02-01&type=Issues)
+
+## 6.7.0
+
+([Full Changelog](https://github.com/ipython/ipykernel/compare/v6.6.1...0be80cbc81927f4fb20343840bf5834b48884717))
+
+### Enhancements made
+
+- Add usage_request and usage_reply based on psutil [#805](https://github.com/ipython/ipykernel/pull/805) ([@echarles](https://github.com/echarles))
+
+### Bugs fixed
+
+- Removed DebugStdLib from arguments of attach [#839](https://github.com/ipython/ipykernel/pull/839) ([@JohanMabille](https://github.com/JohanMabille))
+- Normalize debugger temp file paths on Windows [#838](https://github.com/ipython/ipykernel/pull/838) ([@kycutler](https://github.com/kycutler))
+- Breakpoint in cell with leading empty lines may be ignored [#829](https://github.com/ipython/ipykernel/pull/829) ([@fcollonval](https://github.com/fcollonval))
+
+### Maintenance and upkeep improvements
+
+- Skip on PyPy, seem to fail. [#837](https://github.com/ipython/ipykernel/pull/837) ([@Carreau](https://github.com/Carreau))
+- Remove pipx to fix conflicts [#835](https://github.com/ipython/ipykernel/pull/835) ([@Carreau](https://github.com/Carreau))
+- Remove impossible skipif. [#834](https://github.com/ipython/ipykernel/pull/834) ([@Carreau](https://github.com/Carreau))
+
+### Contributors to this release
+
+([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2022-01-03&to=2022-01-13&type=c))
+
+[@Carreau](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3ACarreau+updated%3A2022-01-03..2022-01-13&type=Issues) | [@echarles](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aecharles+updated%3A2022-01-03..2022-01-13&type=Issues) | [@fcollonval](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Afcollonval+updated%3A2022-01-03..2022-01-13&type=Issues) | [@JohanMabille](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3AJohanMabille+updated%3A2022-01-03..2022-01-13&type=Issues) | [@kycutler](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Akycutler+updated%3A2022-01-03..2022-01-13&type=Issues)
+
+## 6.6.1
+
+([Full Changelog](https://github.com/ipython/ipykernel/compare/v6.6.0...bdce14b32ca8cc8f4b1635ea47200f0828ec1e05))
+
+### Bugs fixed
+
+- PR: do_one_iteration is a coroutine [#830](https://github.com/ipython/ipykernel/pull/830) ([@impact27](https://github.com/impact27))
+
+### Maintenance and upkeep improvements
+
+- Clean python 2 artifacts. Fix #826 [#827](https://github.com/ipython/ipykernel/pull/827) ([@penguinolog](https://github.com/penguinolog))
+
+### Documentation improvements
+
+- Fix title position in  changelog [#828](https://github.com/ipython/ipykernel/pull/828) ([@fcollonval](https://github.com/fcollonval))
+
+### Contributors to this release
+
+([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2021-12-01&to=2022-01-03&type=c))
+
+[@blink1073](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Ablink1073+updated%3A2021-12-01..2022-01-03&type=Issues) | [@ccordoba12](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Accordoba12+updated%3A2021-12-01..2022-01-03&type=Issues) | [@fcollonval](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Afcollonval+updated%3A2021-12-01..2022-01-03&type=Issues) | [@impact27](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aimpact27+updated%3A2021-12-01..2022-01-03&type=Issues) | [@ivanov](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aivanov+updated%3A2021-12-01..2022-01-03&type=Issues) | [@penguinolog](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Apenguinolog+updated%3A2021-12-01..2022-01-03&type=Issues)
+
+## 6.6.0
+
+([Full Changelog](https://github.com/ipython/ipykernel/compare/v6.5.1...9566304175d844c23a1f2b1d70c10df475ed2868))
+
+### Enhancements made
+
+- Set `debugOptions` for breakpoints in python standard library source [#812](https://github.com/ipython/ipykernel/pull/812) ([@echarles](https://github.com/echarles))
+- Send `omit_sections` to IPython to choose which sections of documentation you do not want [#809](https://github.com/ipython/ipykernel/pull/809) ([@fasiha](https://github.com/fasiha))
+
+### Bugs fixed
+
+- Added missing `exceptionPaths` field to `debugInfo` reply [#814](https://github.com/ipython/ipykernel/pull/814) ([@JohanMabille](https://github.com/JohanMabille))
+
+### Maintenance and upkeep improvements
+
+- Test `jupyter_kernel_test` as downstream [#813](https://github.com/ipython/ipykernel/pull/813) ([@blink1073](https://github.com/blink1073))
+- Remove `nose` dependency [#808](https://github.com/ipython/ipykernel/pull/808) ([@Kojoley](https://github.com/Kojoley))
+- Add explicit encoding to open calls in debugger [#807](https://github.com/ipython/ipykernel/pull/807) ([@dlukes](https://github.com/dlukes))
+
+### Contributors to this release
+
+([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2021-11-18&to=2021-12-01&type=c))
+
+[@blink1073](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Ablink1073+updated%3A2021-11-18..2021-12-01&type=Issues) | [@dlukes](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Adlukes+updated%3A2021-11-18..2021-12-01&type=Issues) | [@echarles](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aecharles+updated%3A2021-11-18..2021-12-01&type=Issues) | [@fasiha](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Afasiha+updated%3A2021-11-18..2021-12-01&type=Issues) | [@JohanMabille](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3AJohanMabille+updated%3A2021-11-18..2021-12-01&type=Issues) | [@Kojoley](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3AKojoley+updated%3A2021-11-18..2021-12-01&type=Issues)
+
+## 6.5.1
+
+([Full Changelog](https://github.com/ipython/ipykernel/compare/v6.5.0...1ef2017781435d54348fbb170b8c5d096e3e1351))
+
+### Bugs fixed
+
+- Fix the temp file name created by the debugger [#801](https://github.com/ipython/ipykernel/pull/801) ([@eastonsuo](https://github.com/eastonsuo))
+
+### Maintenance and upkeep improvements
+
+- Enforce labels on PRs [#803](https://github.com/ipython/ipykernel/pull/803) ([@blink1073](https://github.com/blink1073))
+- Unpin `IPython`, and remove some dependencies on it. [#796](https://github.com/ipython/ipykernel/pull/796) ([@Carreau](https://github.com/Carreau))
+
+### Contributors to this release
+
+([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2021-11-01&to=2021-11-18&type=c))
+
+[@blink1073](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Ablink1073+updated%3A2021-11-01..2021-11-18&type=Issues) | [@Carreau](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3ACarreau+updated%3A2021-11-01..2021-11-18&type=Issues) | [@eastonsuo](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aeastonsuo+updated%3A2021-11-01..2021-11-18&type=Issues)
 
 ## 6.5.0
 
@@ -22,8 +189,6 @@
 ([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2021-10-20&to=2021-11-01&type=c))
 
 [@ccordoba12](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Accordoba12+updated%3A2021-10-20..2021-11-01&type=Issues) | [@fcollonval](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Afcollonval+updated%3A2021-10-20..2021-11-01&type=Issues) | [@penguinolog](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Apenguinolog+updated%3A2021-10-20..2021-11-01&type=Issues) | [@stukowski](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Astukowski+updated%3A2021-10-20..2021-11-01&type=Issues)
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 6.4.2
 
@@ -85,6 +250,8 @@
 ([GitHub contributors page for this release](https://github.com/ipython/ipykernel/graphs/contributors?from=2021-08-31&to=2021-09-09&type=c))
 
 [@Carreau](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3ACarreau+updated%3A2021-08-31..2021-09-09&type=Issues) | [@frenzymadness](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Afrenzymadness+updated%3A2021-08-31..2021-09-09&type=Issues) | [@martinRenou](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3AmartinRenou+updated%3A2021-08-31..2021-09-09&type=Issues) | [@minrk](https://github.com/search?q=repo%3Aipython%2Fipykernel+involves%3Aminrk+updated%3A2021-08-31..2021-09-09&type=Issues)
+
+## 6.3
 
 ## 6.3.1
 

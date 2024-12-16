@@ -62,7 +62,7 @@ class Version(Unicode):
         self.min = kwargs.pop('min', None)
         self.max = kwargs.pop('max', None)
         kwargs['default_value'] = self.min
-        super(Version, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def validate(self, obj, value):
         if self.min and V(value) < V(self.min):
@@ -79,7 +79,7 @@ class RMessage(Reference):
     content = Dict()
 
     def check(self, d):
-        super(RMessage, self).check(d)
+        super().check(d)
         RHeader().check(self.header)
         if self.parent_header:
             RHeader().check(self.parent_header)
@@ -341,15 +341,23 @@ def test_execute_stop_on_error():
     """execute request should not abort execution queue with stop_on_error False"""
     flush_channels()
 
-    fail = '\n'.join([
-        # sleep to ensure subsequent message is waiting in the queue to be aborted
-        'import time',
-        'time.sleep(0.5)',
-        'raise ValueError',
-    ])
+    fail = "\n".join(
+        [
+            # sleep to ensure subsequent message is waiting in the queue to be aborted
+            # async sleep to ensure coroutines are processing while this happens
+            "import asyncio",
+            "await asyncio.sleep(1)",
+            "raise ValueError()",
+        ]
+    )
     KC.execute(code=fail)
     KC.execute(code='print("Hello")')
-    KC.get_shell_msg(timeout=TIMEOUT)
+    KC.execute(code='print("world")')
+    reply = KC.get_shell_msg(timeout=TIMEOUT)
+    print(reply)
+    reply = KC.get_shell_msg(timeout=TIMEOUT)
+    assert reply["content"]["status"] == "aborted"
+    # second message, too
     reply = KC.get_shell_msg(timeout=TIMEOUT)
     assert reply['content']['status'] == 'aborted'
 

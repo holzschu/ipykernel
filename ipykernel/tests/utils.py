@@ -5,6 +5,7 @@
 
 import atexit
 import os
+import platform
 import sys
 from tempfile import TemporaryDirectory
 from time import time
@@ -13,13 +14,11 @@ from contextlib import contextmanager
 from queue import Empty
 from subprocess import STDOUT
 
-import nose
-
 from jupyter_client import manager
 
 
 STARTUP_TIMEOUT = 60
-TIMEOUT = 60
+TIMEOUT = 100
 
 KM = None
 KC = None
@@ -32,8 +31,9 @@ def start_new_kernel(**kwargs):
     """
     kwargs['stderr'] = STDOUT
     try:
+        import nose
         kwargs['stdout'] = nose.iptest_stdstreams_fileno()
-    except AttributeError:
+    except (ImportError, AttributeError):
         pass
     return manager.start_new_kernel(startup_timeout=STARTUP_TIMEOUT, **kwargs)
 
@@ -145,8 +145,9 @@ def new_kernel(argv=None):
     """
     kwargs = {'stderr': STDOUT}
     try:
+        import nose
         kwargs['stdout'] = nose.iptest_stdstreams_fileno()
-    except AttributeError:
+    except (ImportError, AttributeError):
         pass
     if argv is not None:
         kwargs['extra_arguments'] = argv

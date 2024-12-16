@@ -4,17 +4,19 @@
 # Distributed under the terms of the Modified BSD License.
 
 import ast
-import io
 import os.path
+import platform
+import signal
+import subprocess
 import sys
 import time
+from subprocess import Popen
 from tempfile import TemporaryDirectory
 
 from flaky import flaky
+import psutil
 import pytest
-from packaging import version
 
-from IPython.testing import tools as tt
 import IPython
 from IPython.paths import locate_profile
 
@@ -185,6 +187,7 @@ def test_subprocess_error():
         _check_master(kc, expected=True)
         _check_master(kc, expected=True, stream="stderr")
 
+
 # raw_input tests
 
 def test_raw_input():
@@ -219,7 +222,7 @@ def test_save_history():
         wait_for_idle(kc)
         _, reply = execute("%hist -f " + file, kc=kc)
         assert reply['status'] == 'ok'
-        with io.open(file, encoding='utf-8') as f:
+        with open(file, encoding='utf-8') as f:
             content = f.read()
         assert 'a=1' in content
         assert 'b="abcþ"' in content
@@ -242,7 +245,12 @@ def test_smoke_faulthandler():
 
 def test_help_output():
     """ipython kernel --help-all works"""
-    tt.help_all_output_test('kernel')
+    cmd = [sys.executable, "-m", "IPython", "kernel", "--help-all"]
+    proc = subprocess.run(cmd, timeout=30, capture_output=True)
+    assert proc.returncode == 0, proc.stderr
+    assert b"Traceback" not in proc.stderr
+    assert b"Options" in proc.stdout
+    assert b"Class" in proc.stdout
 
 
 def test_is_complete():
@@ -344,7 +352,7 @@ def test_unc_paths():
         file_path = os.path.splitdrive(os.path.dirname(drive_file_path))[1]
         unc_file_path = os.path.join(unc_root, file_path[1:])
 
-        kc.execute("cd {0:s}".format(unc_file_path))
+        kc.execute(f"cd {unc_file_path:s}")
         reply = kc.get_shell_msg(timeout=TIMEOUT)
         assert reply['content']['status'] == 'ok'
         out, err = assemble_output(kc.get_iopub_msg)
@@ -362,6 +370,10 @@ def test_unc_paths():
         assert reply['content']['status'] == 'ok'
 
 
+@pytest.mark.skipif(
+    platform.python_implementation() == "PyPy",
+    reason="does not work on PyPy",
+)
 def test_shutdown():
     """Kernel exits after polite shutdown_request"""
     with new_kernel() as kc:
@@ -416,8 +428,8 @@ def test_interrupt_with_message():
 
 
 @pytest.mark.skipif(
-    version.parse(IPython.__version__) < version.parse("7.14.0"),
-    reason="Need new IPython"
+    "__pypy__" in sys.builtin_module_names,
+    reason="fails on pypy",
 )
 def test_interrupt_during_pdb_set_trace():
     """
@@ -486,3 +498,75 @@ def test_control_thread_priority():
     # comparing first to last ought to be enough, since queues preserve order
     # use <= in case of very-fast handling and/or low resolution timers
     assert control_dates[-1] <= shell_dates[0]
+
+
+def _child():
+    print("in child", os.getpid())
+
+    def _print_and_exit(sig, frame):
+        print(f"Received signal {sig}")
+        # take some time so retries are triggered
+        time.sleep(0.5)
+        sys.exit(-sig)
+
+    signal.signal(signal.SIGTERM, _print_and_exit)
+    time.sleep(30)
+
+
+def _start_children():
+    ip = IPython.get_ipython()
+    ns = ip.user_ns
+
+    cmd = [sys.executable, "-c", f"from {__name__} import _child; _child()"]
+    child_pg = Popen(cmd, start_new_session=False)
+    child_newpg = Popen(cmd, start_new_session=True)
+    ns["pid"] = os.getpid()
+    ns["child_pg"] = child_pg.pid
+    ns["child_newpg"] = child_newpg.pid
+    # give them time to start up and register signal handlers
+    time.sleep(1)
+
+
+@pytest.mark.skipif(
+    platform.python_implementation() == "PyPy",
+    reason="does not work on PyPy",
+)
+def test_shutdown_subprocesses():
+    """Kernel exits after polite shutdown_request"""
+    with new_kernel() as kc:
+        km = kc.parent
+        msg_id, reply = execute(
+            f"from {__name__} import _start_children\n_start_children()",
+            kc=kc,
+            user_expressions={
+                "pid": "pid",
+                "child_pg": "child_pg",
+                "child_newpg": "child_newpg",
+            },
+        )
+        print(reply)
+        expressions = reply["user_expressions"]
+        kernel_process = psutil.Process(int(expressions["pid"]["data"]["text/plain"]))
+        child_pg = psutil.Process(int(expressions["child_pg"]["data"]["text/plain"]))
+        child_newpg = psutil.Process(
+            int(expressions["child_newpg"]["data"]["text/plain"])
+        )
+        wait_for_idle(kc)
+
+        kc.shutdown()
+        for i in range(300):  # 30s timeout
+            if km.is_alive():
+                time.sleep(0.1)
+            else:
+                break
+        assert not km.is_alive()
+        assert not kernel_process.is_running()
+        # child in the process group shut down
+        assert not child_pg.is_running()
+        # child outside the process group was not shut down (unix only)
+        if os.name != 'nt':
+            assert child_newpg.is_running()
+        try:
+            child_newpg.terminate()
+        except psutil.NoSuchProcess:
+            pass
